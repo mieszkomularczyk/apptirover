@@ -59,69 +59,107 @@ def freshest(snapshot, field):
     return packet['data'], stale_suffix(snapshot, kind)
 
 
-def render(snapshot, host, uptime, controller=None):
+def render(snapshot, host, uptime, controller=None, width=80):
+    """Fixed-width cells keep signs, decimal places, and sections from shifting."""
+    width = max(60, width)
+    label_width = 15 if width >= 76 else 12
+    value_width = 10 if width >= 76 else 8
+    info_width = width - label_width - 3 * value_width - 10
     table = Table(
-        title=f"apptirover | telemetry | {uptime:.0f}s", box=box.SIMPLE,
-        show_header=False, expand=True, padding=(0, 1),
+        title=Text(f"apptirover  |  {uptime:8.1f}s", style="bold cyan"),
+        caption=Text("Left Y: throttle   Right X: turn   Center: stop   Ctrl+C: exit"
+                     if snapshot.get('drive', {}).get('enabled') else "Monitoring only   |   Ctrl+C: exit", style="dim"),
+        box=box.SIMPLE, show_header=False, width=width, padding=(0, 1),
     )
-    table.add_column("Item", style="cyan", no_wrap=True)
-    table.add_column("Value", ratio=1)
+    table.add_column(width=label_width, no_wrap=True, overflow="ellipsis")
+    for _ in range(3):
+        table.add_column(width=value_width, justify="right", no_wrap=True, overflow="ellipsis")
+    table.add_column(width=info_width, no_wrap=True, overflow="ellipsis")
 
-    def row(label, value, style=None):
-        # Treat firmware/error strings as text, never Rich markup or terminal escapes.
-        cleaned = ''.join(char if char.isprintable() else ' ' for char in str(value))
-        table.add_row(label, Text(cleaned, style=style))
+    def clean(value, style=None):
+        return Text(''.join(c if c.isprintable() else ' ' for c in str(value)), style=style)
 
-    state = snapshot['state']
-    row('UART', f"{snapshot['port']} @ {snapshot['baud']} | {state}",
-        'green' if state == 'telemetry live' else 'yellow')
-    ages = []
-    for kind, label in ((1001, 'chassis'), (1002, 'IMU')):
+    def row(label, first='', second='', third='', note='', style=None):
+        table.add_row(clean(label, 'white'), clean(first, style), clean(second, style),
+                      clean(third, style), clean(note, style))
+
+    def section(label, first='', second='', third='', note='', color='cyan'):
+        table.add_row(*(clean(value, f'bold {color} on grey11')
+                        for value in (label, first, second, third, note)))
+
+    def fixed(value, suffix='', signed=False, digits=2):
+        if type(value) not in (int, float):
+            return 'n/a'
+        text = f"{value:+.{digits}f}" if signed else f"{value:.{digits}f}"
+        if len(text + suffix) > value_width:
+            text = f"{value:.1e}"
+        return text + suffix
+
+    def freshness(kind):
         packet = snapshot['packets'].get(str(kind))
-        ages.append(f"{label}: {packet['age_s']:.1f}s old" if packet else f"{label}: not received")
-    row('Feedback', ' | '.join(ages))
+        if not packet:
+            return 'not received', 'yellow'
+        return ((f"{packet['age_s']:.1f}s old", 'green') if packet['fresh']
+                else (f"STALE {packet['age_s']:.1f}s", 'yellow'))
+
+    pad = controller or {'state': 'disabled', 'input_ready': False}
+    drive = snapshot.get('drive', {'enabled': False, 'state': 'disabled'})
     base, imu = packet_values(snapshot, 1001), packet_values(snapshot, 1002)
-    base_stale, imu_stale = stale_suffix(snapshot, 1001), stale_suffix(snapshot, 1002)
     orientation, orientation_stale = freshest(snapshot, 'r')
     temperature, temperature_stale = freshest(snapshot, 'temp')
-    voltage = number(base.get('v'))
-    row('Battery', (f"{voltage} V" if 'v' in base else 'not received') + base_stale)
-    row('Charge/current', 'not reported; no estimated percentage')
-    row('Motor L / R', triple(base, ('L', 'R')) + ' (reported; no encoders)' + base_stale)
-    row('Roll/pitch/yaw', triple(orientation, ('r', 'p', 'y')) + ' deg' + orientation_stale)
-    row('Accel XYZ', triple(imu, ('ax', 'ay', 'az')) + ' (firmware units)' + imu_stale)
-    row('Gyro XYZ', triple(imu, ('gx', 'gy', 'gz')) + ' (firmware units)' + imu_stale)
-    row('Mag XYZ', triple(imu, ('mx', 'my', 'mz')) + ' (raw)' + imu_stale)
-    row('ESP32 temp', number(temperature.get('temp')) + ' C' + temperature_stale)
-    row('Pi', f"CPU {number(host['cpu_temperature_c'], 1)} C | load {host['load_1m']:.2f}")
-    cameras = [f"{name}: {', '.join(nodes)}" for name, nodes in host['usb_cameras'].items()]
-    row('USB camera', ('; '.join(cameras) + ' | capture not started') if cameras else 'not detected')
-    pad = controller or {'state': 'disabled', 'input_ready': False}
-    battery = pad.get('battery_percent')
-    row('8BitDo', pad['state'] + (f' | battery {battery}%' if battery is not None else ''),
-        'green' if pad['input_ready'] else 'yellow')
+    base_age, base_color = freshness(1001)
+    imu_age, imu_color = freshness(1002)
+    section('BATTERY', 'Rover', 'Pad', '', 'charge / current', color='yellow')
+    row('Supply', fixed(base.get('v'), ' V'), fixed(pad.get('battery_percent') if pad.get('connected') else None, '%', digits=0),
+        '', 'not reported' if base_color == 'green' else base_age, base_color)
+
+    section('DRIVE', 'Left', 'Right', 'Limit', 'motor power', color='green')
+    row('Output', fixed(drive.get('left_power', 0) * 100, '%', True, 1),
+        fixed(drive.get('right_power', 0) * 100, '%', True, 1),
+        fixed(drive.get('max_power', 0) * 100, '%', digits=0), drive['state'],
+        'green' if drive.get('armed') else 'yellow')
+    row('Board L / R', fixed(base.get('L'), signed=True), fixed(base.get('R'), signed=True), '',
+        'reported; no encoders' if base_color == 'green' else base_age, base_color)
+
     inputs = pad.get('input') if pad['input_ready'] else None
-    if inputs:
-        sticks = inputs['sticks']
-        row('Sticks X / Y', f"L {sticks['left_x']:+.2f} / {sticks['left_y']:+.2f}   R {sticks['right_x']:+.2f} / {sticks['right_y']:+.2f}")
-        hats = [f"{key.removeprefix('ABS_')}={axis['value']}" for key, axis in inputs['axes'].items() if key.startswith('ABS_HAT')]
-        row('Buttons / D-pad', ', '.join(inputs['buttons'] + hats) or 'none pressed')
-        row('Input events', f"{inputs['events']} | {inputs['last_event'] or 'waiting for stick/button movement'}")
-    elif pad.get('last_error'):
-        row('Controller error', pad['last_error'], 'red')
-    row('Movement', 'disabled; telemetry queries only')
-    row('Traffic', f"queries {snapshot['tx_queries']} | replies {snapshot['telemetry_packets']} | echoes {snapshot['echoes']}")
-    row('Serial health', f"invalid lines {snapshot['invalid_lines']} | reconnects {snapshot['reconnects']}")
+    sticks = inputs['sticks'] if inputs else {}
+    pad_state = 'input ready' if pad['input_ready'] else pad['state']
+    section('CONTROLLER', 'X', 'Y', 'Events', pad_state, color='magenta')
+    row('Left stick', fixed(sticks.get('left_x'), signed=True), fixed(sticks.get('left_y'), signed=True),
+        inputs['events'] if inputs else 'n/a', 'forward / reverse', 'magenta')
+    row('Right stick', fixed(sticks.get('right_x'), signed=True), fixed(sticks.get('right_y'), signed=True),
+        '', 'turn left / right', 'magenta')
+    axes = inputs['axes'] if inputs else {}
+    row('D-pad / keys', axes.get('ABS_HAT0X', {}).get('value', 'n/a'),
+        axes.get('ABS_HAT0Y', {}).get('value', 'n/a'),
+        len(inputs['buttons']) if inputs else 'n/a',
+        ', '.join(inputs['buttons']) if inputs and inputs['buttons'] else 'none pressed', 'magenta')
+
+    section('IMU / GYRO', 'X / Roll', 'Y / Pitch', 'Z / Yaw', imu_age, color='cyan')
+    row('Attitude', *(fixed(orientation.get(key), signed=True) for key in ('r', 'p', 'y')),
+        'STALE / deg' if orientation_stale else 'degrees', 'yellow' if orientation_stale else 'cyan')
+    row('Acceleration', *(fixed(imu.get(key), signed=True) for key in ('ax', 'ay', 'az')), 'firmware units', imu_color)
+    row('Gyroscope', *(fixed(imu.get(key), signed=True) for key in ('gx', 'gy', 'gz')), 'firmware units', imu_color)
+    row('Magnetometer', *(fixed(imu.get(key), signed=True, digits=0) for key in ('mx', 'my', 'mz')), 'raw', imu_color)
+
+    section('SYSTEM', 'Pi CPU', 'ESP32', 'Load', 'camera / UART', color='blue')
+    camera = 'USB camera present' if host['usb_cameras'] else 'no USB camera'
+    row('Health', fixed(host['cpu_temperature_c'], ' C', digits=1), 'STALE' if temperature_stale else fixed(temperature.get('temp'), ' C', digits=1),
+        fixed(host['load_1m']), camera, 'blue')
+    row('UART', snapshot['port'].removeprefix('/dev/'), snapshot['baud'], base_age,
+        snapshot['state'], 'green' if snapshot['state'] == 'telemetry live' else 'yellow')
+    row('RX / TX / bad', snapshot['telemetry_packets'],
+        snapshot['tx_queries'] + drive.get('commands', 0), snapshot['invalid_lines'],
+        f"reconnects {snapshot['reconnects']}", 'dim')
     known = {1001: {'T', 'L', 'R', 'v', 'r', 'p', 'y', 'temp'},
              1002: {'T', 'r', 'p', 'y', 'temp', 'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'mx', 'my', 'mz'}}
     for kind, packet in snapshot['packets'].items():
         extra = {key: value for key, value in packet['data'].items() if key not in known.get(int(kind), set())}
         if extra:
-            row(f'Extra T={kind}', json.dumps(extra, ensure_ascii=True) + stale_suffix(snapshot, int(kind)))
+            row(f'Extra T={kind}', note=json.dumps(extra, ensure_ascii=True) + stale_suffix(snapshot, int(kind)))
     for kind, packet in snapshot['other_packets'].items():
-        suffix = '' if packet['fresh'] else ' [STALE]'
-        row(f'Reply T={kind}', json.dumps(packet['data'], ensure_ascii=True) + suffix)
-    if snapshot['last_error']:
-        row('Last error', snapshot['last_error'], 'red')
-    row('Exit', 'Ctrl+C | unavailable UART retries automatically')
+        row(f'Reply T={kind}', note=json.dumps(packet['data'], ensure_ascii=True) + ('' if packet['fresh'] else ' STALE'))
+    for label, error in (('UART error', snapshot['last_error']), ('Pad error', pad.get('last_error'))):
+        if error:
+            row(label, note=error, style='red')
     return table

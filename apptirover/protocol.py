@@ -7,7 +7,22 @@ import math
 BASE_QUERY = b'{"T":130}\n'
 IMU_QUERY = b'{"T":126}\n'
 QUERY_TYPES = {126, 130}
+CONTROL_TYPES = {1, 136}
 TELEMETRY_TYPES = {1001, 1002}
+
+
+def motor_command(left, right):
+    if not all(type(value) in (int, float) and math.isfinite(value) and -1 <= value <= 1
+               for value in (left, right)):
+        raise ValueError('Motor power must be finite and within [-1, 1]')
+    # General Driver multiplies T=1 values by 512; keep 8-bit PWM <=255.
+    # Explicit floats are required by this firmware's JSON type checks, even at zero.
+    return (json.dumps({'T': 1, 'L': round(float(left) * 255 / 512, 6),
+                        'R': round(float(right) * 255 / 512, 6)}, separators=(',', ':')) + '\n').encode()
+
+
+STOP_COMMAND = motor_command(0, 0)
+WATCHDOG_COMMAND = b'{"T":136,"cmd":500}\n'
 
 
 def finite_json(value):

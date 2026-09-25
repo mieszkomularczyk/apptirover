@@ -1,9 +1,8 @@
 # apptirover
 
-Live UART telemetry and 8BitDo Lite 2 Bluetooth inputs on this Raspberry Pi 5.
-The app pairs and reconnects the controller automatically and displays its sticks,
-buttons, and D-pad beside the plain WAVE ROVER's sensor data.
-**Motor control remains disabled; UART output contains only telemetry queries.**
+Drive the plain WAVE ROVER from an 8BitDo Lite 2 through this Raspberry Pi 5.
+The app pairs/reconnects the controller and displays grouped, colored telemetry
+with fixed columns for battery, motor output, joysticks, IMU/gyro, and system health.
 
 ## Run
 
@@ -14,8 +13,8 @@ cd /home/mieszko/apptirover
 .venv/bin/python main.py
 ```
 
-The screen updates in place. Press **Ctrl+C** to close the serial connection and
-exit. The default is `/dev/ttyAMA0`, 115200 baud. On this Pi `/dev/serial0` is the
+The screen updates in place at 5 Hz. Press **Ctrl+C** to send zero motor power,
+close the serial connection, and exit. The default is `/dev/ttyAMA0`, 115200 baud. On this Pi `/dev/serial0` is the
 separate debug UART and is not the rover connection. Your account already has
 the required `dialout` membership; normal use does not require `sudo`.
 
@@ -40,10 +39,10 @@ without prompts on the Pi. See the manufacturer's
 For later use, press **Home** in D mode. The saved controller reconnects without
 pairing again. The screen distinguishes Bluetooth connection from **input ready**
 and shows left/right X/Y values, pressed Linux button codes, D-pad values, and
-the number and latest input event. Stick values use an 8% center deadzone and
+the input event count. Stick values use an 8% center deadzone and
 range from -1 to +1; negative Y is up. JSON also includes raw axes, kernel ranges,
-observed minimum/maximum values, input-device path, and Bluetooth address.
-No button or stick has a driving action yet.
+observed minimum/maximum values, latest input event, input-device path, and Bluetooth address.
+The left stick's Y axis and right stick's X axis control driving as described below.
 
 BlueZ stores the bond; the app stores the selected address separately in
 `~/.local/state/apptirover/controller.json` (or under `$XDG_STATE_HOME`). An offline
@@ -56,14 +55,66 @@ discoverable or install a global default pairing agent.
 The input reader follows the controller's Bluetooth identity, so changing
 `/dev/input/eventN` numbers do not affect it. Disconnect clears the controls;
 reconnect opens a fresh reader. A held stick may produce no new events, so event
-silence alone is not a disconnect. This is an input diagnostic, not a measured
-radio-loss stop mechanism for driving. Controller battery percentage appears only
+silence alone is not a disconnect. Radio-loss detection still depends on Linux
+and BlueZ noticing that the controller is gone. Controller battery percentage appears only
 if BlueZ reports it; it was unavailable on this Lite 2 in D mode.
 
 The current account has `input` membership and BlueZ access; no `sudo` is needed
 for normal use. Bluetooth must be unblocked. Only one apptirover controller monitor
 may run at a time. No automatic boot service is installed; launch `main.py`
 to enable enrollment and reconnect supervision.
+
+## Drive
+
+After startup/reconnection, leave both driving axes centered for a quarter second.
+Once the Drive row says **ready**, no extra button is needed:
+
+| Input | Movement |
+| --- | --- |
+| Left stick up/down | Forward/reverse, proportional to tilt |
+| Right stick left/right | Turn the nose left/right, proportional to tilt |
+| Both together | Drive a curve with different left/right motor powers |
+| Right stick alone | Turn on the spot with opposite wheel directions |
+| Center both driving axes | Stop immediately |
+
+Left-stick horizontal and right-stick vertical inputs are ignored for driving.
+Buttons currently have no driving actions. Default maximum power is **50%**.
+Use `--max-power 0.3` for 30%, or another fraction from 0.05 to 1. DC motors may
+not start at small tilts; no automatic minimum-power jump is added.
+
+The Pi mixes `left = throttle + turn`, `right = throttle - turn`, scales both
+together to stay within the power limit, and sends both sides in one `T=1` JSON
+command. The board drives each side's motors together. Turning right always turns
+the nose right, including when reversing. The rover has no encoders: proportional
+PWM adjusts motor power, not a measured speed in m/s. Ordinary changes ramp;
+centering or a fault bypasses the ramp and commands zero immediately.
+
+The serial worker evaluates controls at up to 50 Hz and refreshes motor commands
+at up to 20 Hz, independently of terminal rendering. It stops and requires neutral
+again after input-device loss, a drive-loop gap or controller-worker health older than 250 ms, BlueZ
+status older than 750 ms, chassis feedback older than one second, a UART reconnect,
+or dropped input events. Worker health is distinct from the age of the last changed
+stick value. These deadlines do not bound silent radio-loss detection latency.
+
+Each driving UART connection sends zero first and requests the board's runtime
+500 ms movement-command timeout with `T=136`. Normal exit sends zero before
+Bluetooth cleanup. UART loss/process death must rely on the board's timeout;
+the requested timeout needs physical verification on the installed firmware.
+No firmware is flashed and no flash settings are saved. Do not operate another
+board web/ESP-NOW motion controller concurrently.
+
+`--no-drive` keeps telemetry and controller input monitoring without any motor or
+watchdog configuration commands. `--controller-only` and `--no-controller` also
+disable driving. The initial direction check should use securely supported wheels
+off the floor. There is no automatic startup forward pulse.
+
+During later turning checks, front/rear wheels appeared matched when raised and
+responded gradually to stick tilt. Uneven speeds seen only during floor turning
+are consistent with differing grip/load: tight turns require the fixed tires to
+slip sideways. The board supplies power per side and cannot synchronize individual
+wheel RPM. Try wider moving turns on a smooth level surface; check wheel attachment
+and rubbing with power off if one wheel consistently behaves differently.
+See the turning investigation in [apptirover.md](apptirover.md).
 
 ## Diagnostics
 
@@ -75,7 +126,7 @@ to enable enrollment and reconnect supervision.
 .venv/bin/python main.py --controller-only --refresh 5
 
 # All returned telemetry fields as machine-readable snapshots:
-.venv/bin/python main.py --duration 10 --json
+.venv/bin/python main.py --no-drive --duration 10 --json
 
 # Alternate UART, only if your wiring/configuration differs:
 .venv/bin/python main.py --port /dev/ttyAMA0 --baud 115200
@@ -98,7 +149,7 @@ before launching.
 
 Capable terminals use a live status screen. Dumb terminals, redirected output,
 or `--plain` print a snapshot every two seconds. `--json` follows `--refresh`
-(default 2 Hz) and keeps
+(default 5 Hz) and keeps
 all reply fields, useful on narrow terminals. Nothing is logged to disk by default.
 
 ## Recreate the environment and test
@@ -115,7 +166,9 @@ stale telemetry, reconnect generations, missing hardware, and voltage display.
 Controller tests also cover scoped pairing, ambiguous devices, saved-address
 reconnection, Bluetooth input identity, normalization, button release, dropped
 event recovery, and clearing controls on disconnect. Tests do not move the real
-rover or access Bluetooth.
+rover or access Bluetooth. Drive tests exercise proportional mixing, power limits,
+neutral interlocks, fault stops, stale health, actual serial framing/final stop,
+and fixed positions for changing signed screen values.
 
 On 2026-09-25 the live monitor completed a 12-second test on this rover with
 44 telemetry replies, 44 echoes, no invalid lines, and no reconnects. Battery was
@@ -133,8 +186,16 @@ radio-loss timing have not yet been tested.
 The combined five-minute run finished with 1,103 telemetry replies, no malformed
 lines, and controller input ready after the power cycle. An eight-second app
 restart check reused the saved bond and finished with both subsystems ready.
-All 20 automated tests and the dependency consistency check pass.
+Those checks preceded motor control. The current drive implementation passes 29
+automated tests; hardware driving results are recorded in [apptirover.md](apptirover.md).
 
-The requested startup movement test is deferred while verifying communications.
+With the wheels securely raised, the user confirmed forward/reverse, left/right
+turning, tilt-dependent power, combined turns, and stopping on centering. The
+roughly 115-second run received 449 telemetry replies and 1,784 control echoes,
+with no malformed lines or UART reconnects. A controller reconnect with deflected
+sticks was held at zero output until neutral. Ground handling and the physical
+500 ms board-watchdog timeout are not yet measured.
+
+The automatic startup movement test remains omitted.
 A strict 5 cm limit cannot be guaranteed by a timed pulse on this encoderless
 chassis. See [apptirover.md](apptirover.md) for the full design and future stages.

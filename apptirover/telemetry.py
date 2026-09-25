@@ -3,7 +3,7 @@
 import copy
 from dataclasses import dataclass, field
 
-from .protocol import QUERY_TYPES, TELEMETRY_TYPES
+from .protocol import QUERY_TYPES, CONTROL_TYPES, TELEMETRY_TYPES
 
 
 @dataclass
@@ -16,6 +16,7 @@ class Telemetry:
     tx_queries: int = 0
     rx_bytes: int = 0
     echoes: int = 0
+    control_echoes: int = 0
     received: int = 0
     invalid_lines: int = 0
     reconnects: int = 0
@@ -35,6 +36,9 @@ class Telemetry:
         kind = message["T"]
         if kind in QUERY_TYPES:
             self.echoes += 1
+            return
+        if kind in CONTROL_TYPES:
+            self.control_echoes += 1
             return
         sample = {"data": dict(message), "received_at": now, "generation": self.generation}
         # A type marker alone is not evidence of usable telemetry.
@@ -75,6 +79,7 @@ class Telemetry:
             "state": state, "generation": self.generation, "reconnects": self.reconnects,
             "tx_queries": self.tx_queries, "rx_bytes": self.rx_bytes,
             "telemetry_packets": self.received, "echoes": self.echoes,
+            "control_echoes": self.control_echoes,
             "invalid_lines": self.invalid_lines, "last_error": self.last_error,
             "packets": packets,
             "other_packets": {

@@ -1,4 +1,4 @@
-"""Live rover telemetry and controller inputs; motion remains disabled."""
+"""Controller driving and live rover status."""
 
 import argparse
 import json
@@ -17,11 +17,13 @@ from .telemetry import Telemetry
 
 
 def arguments(argv=None):
-    parser = argparse.ArgumentParser(description='Live WAVE ROVER telemetry (no motion commands).')
+    parser = argparse.ArgumentParser(description='WAVE ROVER: left stick forward/reverse, right stick steering.')
     parser.add_argument('--port', default='/dev/ttyAMA0', help='GPIO UART on this Pi 5')
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--poll-interval', type=float, default=0.5, help='Seconds between queries of each telemetry type')
-    parser.add_argument('--refresh', type=float, default=2.0, help='Screen refreshes per second')
+    parser.add_argument('--refresh', type=float, default=5.0, help='Screen refreshes per second')
+    parser.add_argument('--no-drive', action='store_true', help='Read telemetry and controller; send no motor/configuration commands')
+    parser.add_argument('--max-power', type=float, default=0.5, help='Maximum motor power fraction (0.05–1; default 0.5)')
     parser.add_argument('--duration', type=float, default=0, help='Exit after this many seconds; 0 runs until Ctrl+C')
     controllers = parser.add_mutually_exclusive_group()
     controllers.add_argument('--no-controller', action='store_true', help='UART telemetry only; do not access Bluetooth')
@@ -37,18 +39,22 @@ def arguments(argv=None):
         parser.error('--controller-address cannot be combined with --no-controller')
     if not 9600 <= args.baud <= 921600:
         parser.error('--baud must be between 9600 and 921600')
-    for key, low, high in (('poll_interval', 0.1, 10), ('refresh', 0.2, 10), ('duration', 0, 86400)):
+    for key, low, high in (('poll_interval', 0.1, 10), ('refresh', 0.2, 10), ('duration', 0, 86400), ('max_power', 0.05, 1)):
         value = getattr(args, key)
         if not math.isfinite(value) or not low <= value <= high:
             parser.error(f'--{key.replace("_", "-")} must be between {low} and {high}')
+    if not (args.no_drive or args.no_controller or args.controller_only) and args.poll_interval > 0.5:
+        parser.error('--poll-interval must be at most 0.5 seconds while driving')
     return args
 
 
 def main(argv=None):
     args = arguments(argv)
     console = Console()
-    monitor = None if args.controller_only else SerialMonitor(args.port, args.baud, args.poll_interval)
     controller = None if args.no_controller else ControllerMonitor(args.controller_address)
+    source = controller.snapshot if controller and not args.no_drive else None
+    monitor = None if args.controller_only else SerialMonitor(
+        args.port, args.baud, args.poll_interval, controller_source=source, max_power=args.max_power)
     stopping = threading.Event()
     previous_handlers = {}
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -75,7 +81,7 @@ def main(argv=None):
             if args.json:
                 print(json.dumps({"uptime_s": round(now - started, 3), "rover": snapshot, "host": host, "controller": pad}), flush=True)
             else:
-                screen = render(snapshot, host, now - started, pad)
+                screen = render(snapshot, host, now - started, pad, width=console.width)
                 if live:
                     live.update(screen, refresh=True)
                 else:
@@ -93,10 +99,11 @@ def main(argv=None):
     except BrokenPipeError:
         result = 0
     finally:
-        if controller:
-            controller.close()
+        # Stop motors before waiting for Bluetooth pairing/agent cleanup.
         if monitor:
             monitor.close()
+        if controller:
+            controller.close()
         if live:
             live.stop()
         for sig, handler in previous_handlers.items():

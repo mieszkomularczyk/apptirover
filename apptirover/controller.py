@@ -119,9 +119,10 @@ class ControllerMonitor:
         self.scanning_adapter = None
         self.input_task = None
         self.input_device = None
+        self.worker_at = self.link_at = None
         self.data = dict(state='starting', address=None, name=None, paired=False, connected=False,
                          input_ready=False, device=None, input=None, battery_percent=None,
-                         last_error='', connections=0)
+                         last_error='', connections=0, input_generation=0)
         self.thread = threading.Thread(target=self._thread_main, name='controller', daemon=True)
 
     def update(self, **values):
@@ -131,6 +132,9 @@ class ControllerMonitor:
     def snapshot(self):
         with self.lock:
             snapshot = copy.deepcopy(self.data)
+            now = time.monotonic()
+            snapshot['worker_age_s'] = now - self.worker_at if self.worker_at else None
+            snapshot['link_age_s'] = now - self.link_at if self.link_at else None
         if snapshot['input']:
             last = snapshot['input'].pop('last_event_at')
             snapshot['input']['last_event_age_s'] = round(time.monotonic() - last, 3) if last else None
@@ -212,9 +216,11 @@ class ControllerMonitor:
         try:
             state = InputState(device)
             self.update(input_ready=True, device=device.path, input=state.snapshot(),
-                        state='input ready', last_error='')
+                        state='input ready', last_error='',
+                        input_generation=self.snapshot()['input_generation'] + 1)
             async for event in device.async_read_loop():
-                if state.accept(event, time.monotonic(), device):
+                complete = state.accept(event, time.monotonic(), device)
+                if complete or state.resyncing:
                     self.update(input=state.snapshot())
         except OSError as error:
             self.update(last_error=f'Input device: {error}')
@@ -246,10 +252,18 @@ class ControllerMonitor:
                 if device and device is not self.input_device:
                     device.close()
 
+    async def heartbeat(self):
+        """Worker liveness, not a claim that a cached stick proves radio contact."""
+        while True:
+            with self.lock:
+                self.worker_at = time.monotonic()
+            await asyncio.sleep(0.05)
+
     async def _run(self):
         self.loop, self.task = asyncio.get_running_loop(), asyncio.current_task()
         address = self._load_address()
         self.update(address=address)
+        heartbeat = asyncio.create_task(self.heartbeat())
         try:
             while not self.stop.is_set():
                 try:
@@ -274,12 +288,18 @@ class ControllerMonitor:
                 await asyncio.sleep(2)
         except asyncio.CancelledError:
             pass
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
 
     async def manage(self, address):
         next_attempt = 0
         retry = 2
         while not self.stop.is_set():
             objects = (await self.call('/', 'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects'))[0]
+            with self.lock:
+                self.link_at = time.monotonic()
             adapters = [(path, interfaces[ADAPTER]) for path, interfaces in objects.items() if ADAPTER in interfaces]
             if not adapters:
                 self.scanning_adapter = None
@@ -355,5 +375,5 @@ class ControllerMonitor:
             if not ready_before and self.snapshot()['input_ready']:
                 self.update(connections=self.snapshot()['connections'] + 1)
             next_attempt, retry = 0, 2
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.1)
         return address

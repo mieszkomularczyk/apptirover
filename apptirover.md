@@ -1,26 +1,131 @@
 # apptirover
 
-Updated: 2026-09-25. Status: UART telemetry and Bluetooth pairing/input monitoring
-implemented; driving, streaming integration, and autonomy remain future stages.
+Updated: 2026-09-25. Status: UART telemetry, Bluetooth pairing/input monitoring,
+and proportional two-stick manual driving implemented. Camera integration and
+autonomy remain future stages.
 
 ## Current implementation
 
-The latest instruction adds Lite 2 pairing and joystick input verification after
-successful rover communication checks. The Python master script is [main.py](main.py), using
+The latest instruction adds left-stick forward/reverse, right-stick turning,
+combined proportional steering, and a grouped fixed-column colored status screen.
+The Python master script is [main.py](main.py), using
 the project `.venv`. Run it with `.venv/bin/python main.py` from this directory.
 See [README.md](README.md) for setup, diagnostic options, and tests.
 
 Implemented: a continuously updating CLI status screen, a separate serial-reader
 thread, bounded JSON framing, chassis and IMU polling, echo handling, stale-data
 indicators, reconnect attempts, Pi health, USB camera presence, and plain/JSON
-output modes. Only `T=130` and `T=126` telemetry requests are sent. No camera
-capture, firmware configuration, or motor commands occur.
+output modes. Driving is enabled by default when both UART and controller are
+enabled. `--no-drive` retains stationary telemetry/input diagnostics.
+
+### Manual driving implementation
+
+Left Y is inverted to form forward throttle; right X controls nose-right turning.
+Both inputs use the existing 8% center deadzone. Left X and right Y do not drive.
+Mix left/right as `throttle + turn` and `throttle - turn`; normalize both by the
+same factor if either exceeds magnitude 1, then apply `--max-power` (default 0.5).
+This supports forward/reverse curves and on-the-spot turns. No drive-enable button
+is needed in this version; both driving axes must first remain centered for 250 ms
+after startup, reconnection, or a fault. Controller input is the only motion source.
+
+The board accepts both sides together in `T=1` with floating-point L/R values.
+The vendor [motor implementation](https://github.com/waveshareteam/ugv_base_general/blob/main/General_Driver/movtion_module.h)
+multiplies non-encoder setpoints by 512. The adapter maps normalized power to
+`power * 255 / 512` to stay within 8-bit PWM even at the full-power setting.
+This is motor power, not regulated speed. Each side's motors share the board's
+output; Python does not address the four motors individually. The `T=13` ROS
+velocity mode is not used for this encoderless chassis. No vendor code is copied.
+
+The existing serial worker is the sole motor-command writer. It evaluates input
+at up to 50 Hz and refreshes both motor outputs at up to 20 Hz, independently of
+the display. Changes ramp at 200 percentage points of full power per second,
+with a common interpolation factor for both sides. Neutral and fault stops bypass
+the ramp. Latest input replaces old state; there is no queued motion backlog.
+The display distinguishes commanded power from board-reported L/R fields.
+
+Drive stops and requires neutral again on controller input loss, changed input
+generation, UART reconnection, invalid values, dropped kernel events, a drive-loop
+gap longer than 250 ms, controller
+worker heartbeat older than 250 ms, BlueZ status older than 750 ms, or chassis
+feedback older than one second. An asyncio heartbeat checks worker execution at
+50 ms intervals; BlueZ is polled every 100 ms while connected. These indicate
+software/known-link health, not proof of fresh radio packets. A held stick remains
+valid without change events. Real out-of-range detection latency remains unmeasured.
+
+Each driving serial connection sends zero before other commands, then requests
+`T=136, cmd=500` to set the board's movement watchdog. The vendor
+[UART handler](https://github.com/waveshareteam/ugv_base_general/blob/main/General_Driver/uart_ctrl.h)
+refreshes this watchdog only on motion commands; telemetry queries do not refresh
+it. An echo alone does not prove firmware execution. The 500 ms timeout is a
+runtime request, still requiring physical verification on this board. Normal
+shutdown sends zero before waiting for Bluetooth cleanup. UART failure/process
+death relies on the board watchdog; no firmware or persistent settings are changed.
+Concurrent board web/ESP-NOW control is not arbitrated by this application.
+
+The status table has fixed-width, right-aligned numeric cells with stable decimal
+places and separate color bands for battery, drive, controller, IMU/gyro, and
+system data. The normal 80-column display fits within 24 rows. It refreshes at
+5 Hz; plain output remains periodic and JSON retains complete raw telemetry,
+control state, health ages, and extra firmware fields. No camera is opened.
+
+Twenty-nine automated tests cover mixing, limits, neutral requirements, fault
+stops, stale health, dropped events, serial stop framing, and screen alignment,
+alongside existing UART and Bluetooth checks. This includes requiring neutral
+after a paused drive loop instead of resuming a held command.
+
+Real hardware validation: with all wheels securely raised, the user confirmed
+forward/reverse, turning both ways, proportional tilt response, simultaneous
+throttle and steering, and stopping when centered. The roughly 115-second run
+received 449 telemetry replies and 1,784 control echoes with no malformed input
+or UART reconnects. A controller disconnect/reconnect was observed; its new
+deflected input state remained at zero output behind the neutral interlock.
+The diagnostic process was stopped cleanly after the test. Physical watchdog
+timing, out-of-range stopping latency, and ground handling remain unmeasured.
+
+### Turning response investigation
+
+The user subsequently reported uneven front-right/rear-right wheel speeds during
+floor turning and poor response to stick tilt. The earlier direction test does
+not establish matched wheel RPM or satisfactory low-power ground handling.
+
+The stock interface exposes two motor commands, L and R; the app cannot command
+different powers for front and rear motors on the same side. Exact wheel-speed
+synchronization is not available without per-wheel sensing and independently
+controlled outputs. Motor variation, mechanical drag, electrical connections,
+and unequal tire loading can still produce different speeds at the same PWM.
+These are candidate causes, not a diagnosis of this unit.
+
+A read-only `T=139` query returned `L=1, R=1`: neither side has a reduced stored
+gain. Existing logs and a repeat raised-wheel test show equal-and-opposite
+left/right turn commands, including intermediate values, with no malformed UART
+messages. At the default 50% power cap, normalized steering inputs of 0.1, 0.5,
+and 1.0 request approximately 13, 64, and 127 PWM counts respectively (of 255).
+Normalized input is after the joystick center deadzone. The manufacturer notes
+poor low-speed behavior and possible failure to rotate at low PWM in the
+[WAVE ROVER movement documentation](https://www.waveshare.com/wiki/WAVE_ROVER#Chassis_Movement).
+Floor resistance may therefore make much of the stick range ineffective even
+though the transmitted power is proportional.
+
+The user then confirmed that front/rear wheels appear to run at the same speed
+with the wheels raised, and that speed increases gradually from partial to full
+steering tilt. This supports load-dependent tire grip/scrub or mechanical effects
+during floor turning as the leading explanation, rather than incorrect joystick
+scaling or separate front/rear software commands. It does not prove a specific
+mechanical defect or rule out a loose wheel attachment under load.
+
+For a tight stationary turn, fixed wheels must slip sideways. Unequal grip/load
+can therefore produce different motor speeds despite shared power. Wider moving
+turns reduce this demand. Before changing motor calibration, compare behavior on
+a smooth level surface and check wheel attachment/rubbing with power off. Do not
+promise matched wheel RPM or mask the symptom with an unmeasured power jump.
+No power limits, motor gains, or steering behavior were changed during this
+investigation. The diagnostic process was stopped cleanly after the comparison.
 
 The master script also starts a Bluetooth/input worker thread with an asyncio
 loop. BlueZ D-Bus handles discovery, a scoped NoInputNoOutput pairing agent,
 trust, and reconnect retries. Linux evdev asynchronously reads the matching
-Bluetooth input device. This stationary milestone uses threads; the stronger
-process isolation and motion watchdog design below remains future work.
+Bluetooth input device. This implementation uses threads; stronger process
+isolation for future camera/autonomy workloads remains future work.
 
 With no selected controller, a Lite 2 name plus gamepad class or HID UUID is
 required before enrollment. Multiple candidates produce a visible ambiguity.
@@ -39,8 +144,8 @@ ranges, normalized sticks with an 8% center deadzone, pressed Linux button codes
 D-pad values, event counts, and event ages. Disconnect clears controls and
 reconnect reacquires the device. Dropped kernel events resync from current kernel
 state. A held stick does not falsely become stale just because no values changed.
-No input is currently routed to the motors. Radio-loss stop timing remains future
-work before driving is enabled.
+The driving axes are routed through the guarded mixer above. Real radio-loss
+stop timing remains unmeasured.
 
 Real first enrollment succeeded in **D mode** with only controller-side pairing
 action. Linux identifies `8BitDo Lite 2`, Bluetooth vendor `2dc8`, product `5112`.
@@ -57,8 +162,7 @@ inputs; `--json` exposes raw fields. `--controller-only` runs without UART;
 The five-minute combined test completed with 1,103 rover telemetry replies,
 no malformed lines, and controller input ready following the physical power
 cycle. An eight-second application restart reused the saved pairing and finished
-with both subsystems ready. All 20 automated tests and the dependency consistency
-check pass.
+with both subsystems ready. Those 20-test checks preceded motor control.
 
 Verified on the real hardware: GPIO14 is TXD0, GPIO15 is RXD0; `/dev/ttyAMA0`
 works at 115200 baud. `/dev/serial0` points to `/dev/ttyAMA10`, the debug UART.
@@ -113,7 +217,7 @@ defaults. They are distinguished from the requirements above and from observed
 facts; they have not been implemented or validated on the moving rover.
 
 The user has authorized implementation of rover telemetry and subsequently
-controller pairing/input reading. Driving is a later stage. The earlier
+controller pairing/input reading, followed by proportional manual driving. The earlier
 planning document was committed and pushed to the configured GitHub repository.
 
 ## 2. Hardware and environment
@@ -398,7 +502,8 @@ Proposed physical button layout, subject to checking the actual input events:
 
 | Input | Action |
 | --- | --- |
-| Left stick | Forward/reverse and left/right steering |
+| Left stick Y | Forward/reverse (implemented) |
+| Right stick X | Left/right differential steering (implemented) |
 | R shoulder, held | Manual drive enable; pressing it also takes over from autonomy |
 | B | Immediate latched stop in any mode |
 | Plus/Start | Re-arm to manual ready, with neutral sticks, R released, and faults cleared |
@@ -418,6 +523,10 @@ left/right power. Start with a conservative power cap and measure low-speed
 motor response; do not add an unexpected minimum-power jump. Smooth ordinary
 changes but let stop requests bypass acceleration smoothing. These are power
 limits until actual physical speeds have been measured.
+
+The R/B/Start/X button actions in this proposed autonomy design are not enabled
+in the current manual version. Current manual driving uses the two sticks and
+the neutral interlock described above.
 
 Proposed timing targets, all requiring later measurement:
 
@@ -444,9 +553,9 @@ out-of-range stop latency. Do not claim the 250 ms producer timeout guarantees
 the same bound for a silent radio failure.
 
 If the whole Pi/control process fails, controller input cannot be handled by
-software on it. The verified ESP32 movement timeout is the fallback. A shorter
-failure bound may require a supported firmware watchdog setting or later firmware
-work; none is assumed available. This software stop is not an independent
+software on it. The ESP32 movement watchdog is the fallback. The current app
+requests 500 ms using the vendor-supported runtime setting; that physical timeout
+has not yet been measured on this board. This software stop is not an independent
 physical emergency-stop circuit.
 
 ## 8. Camera streaming and detection integration
@@ -666,5 +775,6 @@ or document. Implementation changes are now being developed in this repository.
 
 The original design review used local files and manufacturer/library
 documentation. The current milestones additionally verify real serial telemetry,
-automatic controller pairing/reconnection, and joystick/button readings. They
-have not moved the rover, run the camera, or modified either adjacent project.
+automatic controller pairing/reconnection, joystick/button readings, and manual
+motor control with the wheels raised. Ground driving, camera integration, and
+autonomy are not validated. Neither adjacent software project was modified.

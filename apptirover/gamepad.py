@@ -91,5 +91,5 @@ class InputState:
         return dict(sticks=sticks, axes={code_name(ecodes.EV_ABS, code): dict(axis)
                                       for code, axis in self.axes.items()},
                     buttons=sorted(code_name(ecodes.EV_KEY, code) for code in self.buttons),
-                    events=self.events, dropped=self.dropped,
+                    events=self.events, dropped=self.dropped, resyncing=self.resyncing,
                     last_event=self.last_event, last_event_at=self.last_event_at)
