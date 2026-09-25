@@ -1,7 +1,10 @@
 .venv/
+.venv-export/
+.cache/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
 *.log
 .env
+models/

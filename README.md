@@ -3,6 +3,8 @@
 Drive the plain WAVE ROVER from an 8BitDo Lite 2 through this Raspberry Pi 5.
 The app pairs/reconnects the controller and displays grouped, colored telemetry
 with fixed columns for battery, motor output, joysticks, IMU/gyro, and system health.
+It also streams USB camera video over RTSP with optional person detection. The
+complete remote **ffplay command is always shown above the status table**.
 
 ## Run
 
@@ -21,12 +23,44 @@ the required `dialout` membership; normal use does not require `sudo`.
 The display includes battery voltage, roll/pitch/yaw, acceleration, angular-rate
 and magnetic readings, ESP32 temperature, reported left/right motor fields, Pi
 temperature/load, USB camera presence, reply ages, request/echo counters, and
-serial errors. Unknown reply fields are retained. The camera is not opened.
+serial errors, video/detection FPS, fresh person count and camera health.
+Short interactive terminals omit secondary telemetry rows to keep the full
+playback command visible; plain/JSON output retains the complete status.
+Unknown reply fields are retained.
 
 Battery `v` is **already in volts** on the verified firmware. Percentage,
 charging state, and current are not exposed by the two telemetry replies and are
 not estimated. IMU axes retain the firmware's values without speculative unit
 conversion. The motor fields are not encoder measurements of wheel speed.
+
+## Camera and person detection
+
+Normal launch enables camera streaming and YOLO26n/NCNN person detection. The
+replacement camera uses **MJPEG 640×480 at 30 FPS**, with detection capped at
+**15 FPS**. Press **D** in the terminal to enable/disable detection while video
+continues. The stream is `rtsp://<PI-LAN-IP>:8554/camera`; copy the complete ffplay
+command from the CLI onto the other PC.
+
+```bash
+.venv/bin/python main.py --no-drive       # Stationary camera, telemetry and controller
+.venv/bin/python main.py --no-detection   # Video without AI; manual driving enabled
+.venv/bin/python main.py --no-camera      # Manual driving and telemetry only
+.venv/bin/python main.py --camera-only    # Camera without UART or Bluetooth
+```
+
+Camera capture/encoding/RTSP run in a separate process; NCNN has another process.
+The main app receives small timestamped observations, never video frames. Camera
+or detector failures do not disable manual control, and detector failure leaves
+video running. CPU thread limits, bounded queues and freshness checks keep old
+work from accumulating. The existing serial worker remains the only motor writer.
+No autonomous driving or person tracking has been added.
+
+Use `--stream-host HOST` to choose the address shown in the ffplay command,
+`--camera-device PATH` to select a camera, and `--detection-fps N` to limit AI
+work. Default RTSP listening permits LAN viewers without authentication. Models
+are already present locally but are excluded from Git.
+See [camera setup, architecture and verification](docs/camera.md) for all modes,
+dependencies, observation fields, runtime control and recovery behavior.
 
 ## Pair and read the Lite 2
 
@@ -120,7 +154,7 @@ See the turning investigation in [apptirover.md](apptirover.md).
 
 ```bash
 # Bounded real-rover communication check:
-.venv/bin/python main.py --no-controller --duration 10 --plain
+.venv/bin/python main.py --no-controller --no-camera --duration 10 --plain
 
 # Bluetooth/input check without opening the rover UART:
 .venv/bin/python main.py --controller-only --refresh 5
@@ -133,9 +167,12 @@ See the turning investigation in [apptirover.md](apptirover.md).
 ```
 
 `--duration` exits with code 0 only when every enabled subsystem is ready at the
-end: fresh chassis/IMU feedback and controller input ready. Code 2 indicates a
-subsystem is unavailable. `--no-controller` requires only rover feedback;
-`--controller-only` requires only controller input. A monitor failure returns 1.
+end: fresh chassis/IMU feedback, controller input ready, streaming video and
+fresh detection results (when enabled). Code 2 indicates a subsystem is unavailable.
+`--no-controller --no-camera` requires only rover feedback; `--controller-only`
+requires only controller input; `--camera-only` requires only camera readiness.
+A UART/controller monitor failure returns 1. Camera faults are reported without
+ending interactive manual operation.
 Interactive interruption exits normally and preserves the controller bond.
 
 The monitor alternates `T=130` chassis queries and `T=126` IMU queries, targeting
@@ -155,10 +192,15 @@ all reply fields, useful on narrow terminals. Nothing is logged to disk by defau
 ## Recreate the environment and test
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+/usr/bin/python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt -r requirements-camera.txt
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+The camera also needs OS GStreamer/GI bindings and exported model files; see
+[camera installation](docs/camera.md#dependencies-and-model). Manual operation
+with `--no-camera` needs only the base requirements. All verification described
+below before camera integration is historical.
 
 Tests use captured reply shapes and a simulated rover over a pseudo-terminal.
 They check fragmented/corrupt input, query-only output, echoes, exclusive access,

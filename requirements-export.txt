@@ -1,0 +1,4 @@
+# Install CPU-only torch/torchvision first; see README.md.
+ultralytics==8.4.155
+ncnn==1.0.20260526
+pnnx==20260526

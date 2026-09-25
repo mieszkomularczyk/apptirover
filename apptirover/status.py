@@ -7,6 +7,7 @@ from pathlib import Path
 from rich import box
 from rich.table import Table
 from rich.text import Text
+from rich.console import Group
 
 
 def host_status():
@@ -59,16 +60,20 @@ def freshest(snapshot, field):
     return packet['data'], stale_suffix(snapshot, kind)
 
 
-def render(snapshot, host, uptime, controller=None, width=80):
+def render(snapshot, host, uptime, controller=None, width=80, camera=None, height=None):
     """Fixed-width cells keep signs, decimal places, and sections from shifting."""
     width = max(60, width)
     label_width = 15 if width >= 76 else 12
     value_width = 10 if width >= 76 else 8
     info_width = width - label_width - 3 * value_width - 10
+    hint = ("Left Y: throttle   Right X: turn   Center: stop   Ctrl+C: exit"
+            if snapshot.get('drive', {}).get('enabled') else "Monitoring only   |   Ctrl+C: exit")
+    if camera:
+        hint = ('Left Y: move  Right X: turn  Center: stop  D: detection  Ctrl+C: exit'
+                if snapshot.get('drive', {}).get('enabled') else 'Monitoring only   |   D: detection   |   Ctrl+C: exit')
     table = Table(
         title=Text(f"apptirover  |  {uptime:8.1f}s", style="bold cyan"),
-        caption=Text("Left Y: throttle   Right X: turn   Center: stop   Ctrl+C: exit"
-                     if snapshot.get('drive', {}).get('enabled') else "Monitoring only   |   Ctrl+C: exit", style="dim"),
+        caption=Text(hint, style="dim"),
         box=box.SIMPLE, show_header=False, width=width, padding=(0, 1),
     )
     table.add_column(width=label_width, no_wrap=True, overflow="ellipsis")
@@ -79,13 +84,15 @@ def render(snapshot, host, uptime, controller=None, width=80):
     def clean(value, style=None):
         return Text(''.join(c if c.isprintable() else ' ' for c in str(value)), style=style)
 
+    rows = []
+
     def row(label, first='', second='', third='', note='', style=None):
-        table.add_row(clean(label, 'white'), clean(first, style), clean(second, style),
-                      clean(third, style), clean(note, style))
+        rows.append((label, (clean(label, 'white'), clean(first, style), clean(second, style),
+                            clean(third, style), clean(note, style))))
 
     def section(label, first='', second='', third='', note='', color='cyan'):
-        table.add_row(*(clean(value, f'bold {color} on grey11')
-                        for value in (label, first, second, third, note)))
+        rows.append((label, tuple(clean(value, f'bold {color} on grey11')
+                                 for value in (label, first, second, third, note))))
 
     def fixed(value, suffix='', signed=False, digits=2):
         if type(value) not in (int, float):
@@ -135,6 +142,16 @@ def render(snapshot, host, uptime, controller=None, width=80):
         len(inputs['buttons']) if inputs else 'n/a',
         ', '.join(inputs['buttons']) if inputs and inputs['buttons'] else 'none pressed', 'magenta')
 
+    if camera:
+        section('CAMERA', 'Video FPS', 'AI FPS', 'People', camera['state'], color='bright_green')
+        row('Stream', fixed(camera.get('video_fps'), digits=1), fixed(camera.get('detection_fps'), digits=1),
+            camera.get('people') if camera.get('people') is not None else 'n/a',
+            camera['detection_state'], 'green' if camera.get('ready') else 'yellow')
+        observation = camera.get('observation') or {}
+        row('Vision age', fixed(camera.get('frame_age_s'), ' s'),
+            fixed(observation.get('inference_ms'), ' ms', digits=1), fixed(camera.get('observation_age_s'), ' s'),
+            'fresh' if camera.get('observation_valid') else 'no fresh detection', 'dim')
+
     section('IMU / GYRO', 'X / Roll', 'Y / Pitch', 'Z / Yaw', imu_age, color='cyan')
     row('Attitude', *(fixed(orientation.get(key), signed=True) for key in ('r', 'p', 'y')),
         'STALE / deg' if orientation_stale else 'degrees', 'yellow' if orientation_stale else 'cyan')
@@ -143,9 +160,9 @@ def render(snapshot, host, uptime, controller=None, width=80):
     row('Magnetometer', *(fixed(imu.get(key), signed=True, digits=0) for key in ('mx', 'my', 'mz')), 'raw', imu_color)
 
     section('SYSTEM', 'Pi CPU', 'ESP32', 'Load', 'camera / UART', color='blue')
-    camera = 'USB camera present' if host['usb_cameras'] else 'no USB camera'
+    camera_presence = 'USB camera present' if host['usb_cameras'] else 'no USB camera'
     row('Health', fixed(host['cpu_temperature_c'], ' C', digits=1), 'STALE' if temperature_stale else fixed(temperature.get('temp'), ' C', digits=1),
-        fixed(host['load_1m']), camera, 'blue')
+        fixed(host['load_1m']), camera_presence, 'blue')
     row('UART', snapshot['port'].removeprefix('/dev/'), snapshot['baud'], base_age,
         snapshot['state'], 'green' if snapshot['state'] == 'telemetry live' else 'yellow')
     row('RX / TX / bad', snapshot['telemetry_packets'],
@@ -162,4 +179,26 @@ def render(snapshot, host, uptime, controller=None, width=80):
     for label, error in (('UART error', snapshot['last_error']), ('Pad error', pad.get('last_error'))):
         if error:
             row(label, note=error, style='red')
-    return table
+    if camera:
+        for label, error in (('Camera error', camera.get('last_error')), ('Detector error', camera.get('detection_error'))):
+            if error:
+                row(label, note=error, style='red')
+    command = None
+    if camera:
+        command = Text('Remote video: ' + camera['ffplay_command'], style='bright_green', overflow='fold')
+        # Keep the complete command at the top, including on a short terminal.
+        # Omit secondary telemetry rows first; JSON/plain retain every field.
+        if height:
+            from rich.console import Console
+            measure = Console(width=width, color_system=None)
+            command_lines = len(measure.render_lines(command, measure.options, pad=False))
+            budget = max(5, height - command_lines - 5)
+            optional = ['RX / TX / bad', 'Board L / R', 'D-pad / keys', 'Magnetometer',
+                        'Health', 'Vision age', 'Acceleration']
+            for label in optional:
+                if len(rows) <= budget:
+                    break
+                rows = [item for item in rows if item[0] != label]
+    for _, cells in rows:
+        table.add_row(*cells)
+    return Group(command, table) if command else table

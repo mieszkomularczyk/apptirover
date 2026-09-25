@@ -1,12 +1,52 @@
 # apptirover
 
 Updated: 2026-09-25. Status: UART telemetry, Bluetooth pairing/input monitoring,
-and proportional two-stick manual driving implemented. Camera integration and
-autonomy remain future stages.
+proportional two-stick manual driving, USB RTSP camera streaming and optional
+person detection implemented. Autonomy remains a future stage.
 
 ## Current implementation
 
-The latest instruction adds left-stick forward/reverse, right-stick turning,
+### Camera integration (latest change)
+
+Camera support is integrated from `/home/mieszko/rovercam` into this repository.
+The user replaced the old Arducam with a working USB camera reporting
+`HD USB Camaer 4K: HD USB Camaer`. Its MJPEG 640×480/30 FPS mode is the new
+default, with YOLO26n NCNN person detection capped at 15 FPS.
+
+The main process retains Bluetooth and the sole UART/control thread. A supervisor
+thread launches a separate camera/RTSP process, which spawns an inference process.
+Nonblocking bounded IPC publishes timestamped observations and health; control
+never waits on vision. The video branch continues while detection loads, is
+disabled, or fails. Manual driving remains available through camera failures.
+Child processes have bounded shutdown/recovery and parent-death cleanup.
+
+The full ffplay command, with the Pi's LAN address, is always shown above the CLI
+table. `D` toggles detection in the terminal; `--no-detection` starts video without
+AI, `--no-camera` disables camera workers, and `--camera-only` excludes UART and
+Bluetooth. `--no-drive` starts all monitoring/camera functions without motor or
+watchdog writes. On short terminals, secondary rows are omitted to preserve the
+playback command and essential status. Plain/JSON retain all fields.
+
+Fresh observations include normalized person boxes, confidence, source and
+completion timestamps, and process/capture/detection generations. They are ready
+for a future follower, but no target tracking, autonomy or motor arbitration was
+added. Manual control mapping and safety interlocks are unchanged.
+
+The one-minute stationary real-camera test produced 1,771 encoded frames, roughly
+30 FPS video and 15 detections/sec, with median inference about 22 ms and no
+capture/process restarts. A local RTSP receiver decoded 300 frames without errors.
+The detector reported a person in the live scene. UART received 233 telemetry
+packets with no malformed input and **zero motor commands**. The controller was
+offline, so the combined bounded run correctly exited 2; camera and telemetry
+were ready. Physical joystick input during camera load has not yet been checked.
+
+Details, dependencies, the observation contract and simulated-control integration
+tests are in [docs/camera.md](docs/camera.md). The old Arducam stall is a historical
+issue of the replaced camera, not an assumed fault of this one.
+
+### Existing control implementation
+
+The preceding manual-control milestone added left-stick forward/reverse, right-stick turning,
 combined proportional steering, and a grouped fixed-column colored status screen.
 The Python master script is [main.py](main.py), using
 the project `.venv`. Run it with `.venv/bin/python main.py` from this directory.
@@ -66,7 +106,8 @@ The status table has fixed-width, right-aligned numeric cells with stable decima
 places and separate color bands for battery, drive, controller, IMU/gyro, and
 system data. The normal 80-column display fits within 24 rows. It refreshes at
 5 Hz; plain output remains periodic and JSON retains complete raw telemetry,
-control state, health ages, and extra firmware fields. No camera is opened.
+control state, health ages, and extra firmware fields. The camera extension above
+adds independent capture and inference workers.
 
 Twenty-nine automated tests cover mixing, limits, neutral requirements, fault
 stops, stale health, dropped events, serial stop framing, and screen alignment,
@@ -125,7 +166,8 @@ The master script also starts a Bluetooth/input worker thread with an asyncio
 loop. BlueZ D-Bus handles discovery, a scoped NoInputNoOutput pairing agent,
 trust, and reconnect retries. Linux evdev asynchronously reads the matching
 Bluetooth input device. This implementation uses threads; stronger process
-isolation for future camera/autonomy workloads remains future work.
+isolation for camera/inference is now implemented as described above; autonomy
+remains future work.
 
 With no selected controller, a Lite 2 name plus gamepad class or HID UUID is
 required before enrollment. Multiple candidates produce a visible ambiguity.
@@ -710,7 +752,7 @@ These are future implementation and validation steps, not actions performed now.
 | 1. Establish hardware profile | Confirm wiring, UART mapping, firmware, telemetry, power, controller mode, and camera identity; inspect other UART users and firmware command paths | Recorded working profile; no unsupported chassis assumptions; Bluetooth retained |
 | 2. Core, master script, and stop rules | Establish Python/venv, master launch, initial CLI status, one serial owner, authority state machine, bounded motion, and stop handling | Status appears with missing/disconnected devices; simulated tests reject stale commands; controlled motor tests verify direction, zero output, and firmware timeout |
 | 3. Controller lifecycle | Automatic enrollment, persistent bonding, reconnection, calibrated inputs, manual driving | First pairing needs only controller pairing mode; power cycling either side reconnects; reconnect remains disarmed |
-| 4. Camera integration | Preserve existing pipeline, add metadata/health, investigate the recorded capture stall | RTSP and person boxes work; source timestamps remain valid across recovery; slow viewers cannot block control |
+| 4. Camera integration (implemented) | Reuse pipeline with the replacement camera; separate camera/AI processes and timestamped metadata | RTSP/person boxes verified; detection toggles/failures preserve video; camera failures preserve simulated control |
 | 5. Following | Target selection/continuity, bounded steering and approach, controller cancellation | Target loss stops; close target stops approach; ambiguous people do not cause silent target switching |
 | 6. Boot and combined operation | Service lifecycle, status, long-running load and failure checks | No login needed; repeated startup/recovery never resumes movement; camera load does not defeat override |
 
