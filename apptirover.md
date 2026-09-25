@@ -1,6 +1,86 @@
 # apptirover
 
-Updated: 2026-09-25. Status: requirements and proposed design; no implementation.
+Updated: 2026-09-25. Status: UART telemetry and Bluetooth pairing/input monitoring
+implemented; driving, streaming integration, and autonomy remain future stages.
+
+## Current implementation
+
+The latest instruction adds Lite 2 pairing and joystick input verification after
+successful rover communication checks. The Python master script is [main.py](main.py), using
+the project `.venv`. Run it with `.venv/bin/python main.py` from this directory.
+See [README.md](README.md) for setup, diagnostic options, and tests.
+
+Implemented: a continuously updating CLI status screen, a separate serial-reader
+thread, bounded JSON framing, chassis and IMU polling, echo handling, stale-data
+indicators, reconnect attempts, Pi health, USB camera presence, and plain/JSON
+output modes. Only `T=130` and `T=126` telemetry requests are sent. No camera
+capture, firmware configuration, or motor commands occur.
+
+The master script also starts a Bluetooth/input worker thread with an asyncio
+loop. BlueZ D-Bus handles discovery, a scoped NoInputNoOutput pairing agent,
+trust, and reconnect retries. Linux evdev asynchronously reads the matching
+Bluetooth input device. This stationary milestone uses threads; the stronger
+process isolation and motion watchdog design below remains future work.
+
+With no selected controller, a Lite 2 name plus gamepad class or HID UUID is
+required before enrollment. Multiple candidates produce a visible ambiguity.
+BlueZ retains the bond; the app saves the chosen address under
+`~/.local/state/apptirover/controller.json`, respecting `XDG_STATE_HOME`. It
+reconnects only that controller; powered-off controllers do not trigger new
+enrollment. `--controller-address MAC` explicitly selects a specific controller.
+The app does not make the Pi discoverable or become the global default pairing
+agent. It refuses unrelated pairing/service requests. A file lock stops duplicate
+monitors. Retries use bounded backoff; loss of BlueZ restarts the worker's D-Bus
+connection. No boot service has been installed.
+
+Input readiness requires the selected MAC in the Linux device's `uniq` field,
+Bluetooth bus identity, and both stick axis pairs. Snapshots contain raw axes and
+ranges, normalized sticks with an 8% center deadzone, pressed Linux button codes,
+D-pad values, event counts, and event ages. Disconnect clears controls and
+reconnect reacquires the device. Dropped kernel events resync from current kernel
+state. A held stick does not falsely become stale just because no values changed.
+No input is currently routed to the motors. Radio-loss stop timing remains future
+work before driving is enabled.
+
+Real first enrollment succeeded in **D mode** with only controller-side pairing
+action. Linux identifies `8BitDo Lite 2`, Bluetooth vendor `2dc8`, product `5112`.
+Left stick uses `ABS_X/Y`; right stick uses `ABS_Z/RZ`; each has raw range 0–255
+and neutral near 127/128. Triggers report `ABS_GAS/BRAKE`, D-pad `ABS_HAT0X/Y`.
+Live movement reached both extremes on all four stick axes and button events
+were received. A physical off/on cycle automatically reconnected and produced
+fresh input events. UART telemetry stayed live with no malformed replies.
+Controller battery percentage was not exposed by BlueZ. Pi reboot and Bluetooth
+service restart have not been physically tested. The status screen displays
+inputs; `--json` exposes raw fields. `--controller-only` runs without UART;
+`--no-controller` preserves UART-only diagnostics.
+
+The five-minute combined test completed with 1,103 rover telemetry replies,
+no malformed lines, and controller input ready following the physical power
+cycle. An eight-second application restart reused the saved pairing and finished
+with both subsystems ready. All 20 automated tests and the dependency consistency
+check pass.
+
+Verified on the real hardware: GPIO14 is TXD0, GPIO15 is RXD0; `/dev/ttyAMA0`
+works at 115200 baud. `/dev/serial0` points to `/dev/ttyAMA10`, the debug UART.
+The current user belongs to `dialout`; no other process held the rover port.
+The firmware echoes requests and returns `T=1001` chassis and `T=1002` IMU data.
+
+A 12-second run returned 44 sensor packets plus 44 echoes, with no invalid lines
+or reconnects. It reported approximately 12.33 V battery voltage, roll/pitch/yaw,
+temperature, acceleration, gyroscope and magnetometer readings, and zero L/R
+fields. Battery `v` is directly in volts, unlike the scaling used in parts of the
+multi-model vendor app. Battery percentage, current, and charging state are not
+reported by these replies. USB camera presence was not detected in this run.
+Tests cover framing, valid feedback versus echoes, freshness, reconnects, bounded
+storage, missing hardware, voltage display, simulated serial I/O, scoped pairing,
+input identity/normalization, button release, and dropped-event recovery.
+
+The previously requested startup movement test is deferred for this communication
+milestone. This encoderless rover cannot enforce a measured 5 cm maximum using a
+timed pulse. No forward pulse has been implemented or executed.
+
+The remaining sections describe the overall requirements and proposed next
+stages; they do not imply that those features are already implemented.
 
 ## 1. Intended outcome
 
@@ -32,11 +112,9 @@ The architecture, button assignments, limits, and milestones below are proposed
 defaults. They are distinguished from the requirements above and from observed
 facts; they have not been implemented or validated on the moving rover.
 
-Only documentation is authorized now. Do not write application code, install
-dependencies, alter system configuration, pair devices, open the camera, flash
-firmware, or send rover commands during this planning task.
-Repository initialization, committing this document, configuring the requested
-GitHub remote, and pushing the documentation are separately authorized.
+The user has authorized implementation of rover telemetry and subsequently
+controller pairing/input reading. Driving is a later stage. The earlier
+planning document was committed and pushed to the configured GitHub repository.
 
 ## 2. Hardware and environment
 
@@ -49,7 +127,7 @@ GitHub remote, and pushing the documentation are separately authorized.
 | Chassis | User specifies plain Waveshare WAVE ROVER |
 | Wiring | User reports GPIO TX, RX, GND, SCL, SDA connected to rover |
 | Network | User confirms Wi-Fi and internet access |
-| Controller | User specifies 8BitDo Lite 2; pairing and input mapping not tested |
+| Controller | 8BitDo Lite 2, D mode; automatic pairing and real input readings verified |
 | Camera | Existing rovercam records identify Arducam B0627 USB3 / IMX900, last tested 2026-09-23 |
 | Other hardware | No pan-tilt, arm, lidar, depth sensor, or additional lights confirmed |
 
@@ -58,11 +136,11 @@ Document the physical header pins, BCM numbers, and rover-side labels before
 implementation. Read the onboard sensors through the ESP32's serial interface
 where supported; direct Pi I²C access is not assumed to be necessary.
 
-The boot configuration currently contains `dtparam=uart0=on`. The restricted
-inspection environment did not expose serial, camera-by-id, or input-by-id
-device paths. This does not establish that the real host lacks those devices;
-the actual UART mapping, port ownership, camera identity, and Bluetooth status
-remain to be checked with host device access.
+The boot configuration contains `dtparam=uart0=on`. Host-device inspection and
+real telemetry queries have verified `/dev/ttyAMA0` as the rover connection.
+The sandbox alone does not expose its device nodes. Bluetooth is powered,
+unblocked, and has a trusted Lite 2 bond; camera identity is based on the earlier rovercam
+investigation, with no USB camera detected by the current monitor run.
 
 The clone selects `/dev/ttyAMA0` for Pi 5. Do not blindly substitute
 `/dev/serial0`: on Pi 5 that alias normally identifies the debug UART. Confirm
@@ -199,15 +277,18 @@ rovercam currently relies on OS-provided GObject/GStreamer bindings, so its
 environment needs access to those bindings. Keep model-export tooling separate
 from the runtime environment. Record dependencies reproducibly and exclude
 virtual environments, caches, credentials, and downloaded models from Git when
-implementation begins. No environment or dependency installation is needed for
-this documentation commit.
+implementation begins. The UART milestone now has its own prepared virtual
+environment; future vision integration must account for the OS GStreamer bindings.
 
 Proposed dependencies
 include BlueZ D-Bus for Bluetooth, Linux input events through
 [python-evdev](https://python-evdev.readthedocs.io/en/latest/tutorial.html), and
 [pySerial](https://pyserial.readthedocs.io/en/latest/pyserial_api.html) with bounded
 read/write timeouts and exclusive port access where supported. Choose exact
-versions during implementation on the current OS.
+versions during implementation on the current OS. For the current UART milestone,
+pySerial 3.5 and Rich 14.1.0 are installed in `.venv`; exact runtime dependencies
+are recorded in [requirements.txt](requirements.txt). No Bluetooth libraries are
+installed for this stage.
 
 ```mermaid
 flowchart LR
@@ -579,11 +660,11 @@ The adjacent `rovercam` and `ugv_rpi` directories are local references, not
 vendored project files; links to them require that workspace layout and will not
 resolve as files within the GitHub repository.
 
-Authentication for pushing is a separate workstation concern. Do not store
-GitHub tokens or other credentials in the project or document. The user reports
-that this Pi is not yet signed in to their GitHub account.
+GitHub HTTPS authentication was configured through GitHub CLI when publishing the
+initial document. Do not store GitHub tokens or other credentials in the project
+or document. Implementation changes are now being developed in this repository.
 
-This design review read local files and manufacturer/library documentation. It
-did not test serial communication, move the rover, pair the controller, run the
-camera, or modify either existing software project. Git publication does not
-change the documentation-only development scope.
+The original design review used local files and manufacturer/library
+documentation. The current milestones additionally verify real serial telemetry,
+automatic controller pairing/reconnection, and joystick/button readings. They
+have not moved the rover, run the camera, or modified either adjacent project.
