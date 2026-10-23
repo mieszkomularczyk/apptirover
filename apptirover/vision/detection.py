@@ -153,7 +153,7 @@ def _worker(model, threads, confidence, iou, pixels, shape, lock,
         low_threshold = min(.1, confidence / 2)
         detector = Detector(model, threads, low_threshold, iou)
         tracker = PersonTracker(high_threshold=confidence, low_threshold=low_threshold,
-                                new_threshold=max(.5, confidence))
+                                new_threshold=confidence)
         detector.predict(np.zeros(shape, dtype=np.uint8))
         send(channel, dict(type='ready'))
         shared = np.frombuffer(pixels, dtype=np.uint8).reshape(shape)

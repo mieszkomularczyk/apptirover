@@ -126,9 +126,11 @@ process-group cleanup prevent orphaned camera/detection workers on exit.
 
 Person following consumes these observations through the existing UART control
 arbiter. It requires measurements at most 250 ms old, independently of the
-500 ms overlay expiry. Manual takeover, stale/lost/ambiguous targets and source
-restarts cancel it; recovery never silently resumes following. Only the existing
-UART owner writes motors. See [following details](following.md).
+500 ms overlay expiry. Only X changes the following mode: manual input temporarily
+takes priority, while stale/lost/ambiguous targets and source restarts suspend
+autonomous motion. Fresh target data and neutral sticks let the enabled mode
+resume automatically. Only the existing UART owner writes motors.
+See [following details](following.md).
 
 ## Dependencies and model
 

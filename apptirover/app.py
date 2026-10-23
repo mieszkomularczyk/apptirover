@@ -26,10 +26,22 @@ def arguments(argv=None):
     parser.add_argument('--poll-interval', type=float, default=0.5, help='Seconds between queries of each telemetry type')
     parser.add_argument('--refresh', type=float, default=5.0, help='Screen refreshes per second')
     parser.add_argument('--no-drive', action='store_true', help='Read telemetry and controller; send no motor/configuration commands')
-    parser.add_argument('--max-power', type=float, default=0.5, help='Maximum motor power fraction (0.05–1; default 0.5)')
+    parser.add_argument('--max-power', type=float, default=1., help='Hard motor power cap for every mode (0.05–1; default 1)')
+    parser.add_argument('--manual-power', type=float, default=.5, help='Manual driving power cap, also bounded by --max-power (default 0.5)')
     following = parser.add_argument_group('person following (controller X toggles)')
-    following.add_argument('--follow-width', type=float, default=.15, help='Desired person width as a fraction of the image (default 0.15)')
-    following.add_argument('--follow-power', type=float, default=.25, help='Following motor power cap, also bounded by --max-power (default 0.25)')
+    following.add_argument('--follow-width', type=float, help='Fixed desired person width (0.03–0.8); default learns acquired width times --follow-distance-scale')
+    following.add_argument('--follow-distance-scale', type=float, default=1.25,
+                           help='Automatic width multiplier (1–2; default 1.25 is closer; 1 holds acquisition distance)')
+    following.add_argument('--follow-power', type=float, default=1., help='Following motor power cap, also bounded by --max-power (default 1)')
+    following.add_argument('--follow-min-power', type=float, default=.5, help='Minimum pulse power; small demands use short bursts (default 0.5; 0 disables pulses)')
+    following.add_argument('--follow-turn-limit', type=float, default=.25,
+                           help='Yaw PID limit before power scaling/pulses (0.05–1; default 0.25)')
+    following.add_argument('--follow-pulse-ms', type=float, default=60,
+                           help='Small-correction pulse duration (40–150 ms; default 60; rounded by control ticks)')
+    for axis, gains in (('yaw', (.65, .45, .08)), ('distance', (.35, .45, .05))):
+        for term, gain in zip(('kp', 'ki', 'kd'), gains):
+            following.add_argument(f'--follow-{axis}-{term}', type=float, default=gain,
+                                   help=f'{axis.capitalize()} PID {term.upper()} (0–10; default {gain})')
     following.add_argument('--follow-button', default='BTN_NORTH',
                            choices=('BTN_NORTH', 'BTN_WEST', 'BTN_A', 'BTN_B', 'BTN_TL', 'BTN_TR', 'BTN_START', 'BTN_SELECT'),
                            help='Linux toggle button; default BTN_NORTH (Lite 2 X); see controller keys row')
@@ -53,14 +65,23 @@ def arguments(argv=None):
     if not 9600 <= args.baud <= 921600:
         parser.error('--baud must be between 9600 and 921600')
     for key, low, high in (('poll_interval', 0.1, 10), ('refresh', 0.2, 10), ('duration', 0, 86400),
-                           ('max_power', 0.05, 1), ('follow_width', .03, .8), ('follow_power', .05, 1)):
+                           ('max_power', 0.05, 1), ('manual_power', .05, 1), ('follow_power', .05, 1), ('follow_min_power', 0, 1),
+                           ('follow_distance_scale', 1, 2), ('follow_turn_limit', .05, 1), ('follow_pulse_ms', 40, 150),
+                           *((f'follow_{axis}_{term}', 0, 10) for axis in ('yaw', 'distance') for term in ('kp', 'ki', 'kd'))):
         value = getattr(args, key)
         if not math.isfinite(value) or not low <= value <= high:
             parser.error(f'--{key.replace("_", "-")} must be between {low} and {high}')
+    if args.follow_width is not None and (not math.isfinite(args.follow_width) or not .03 <= args.follow_width <= .8):
+        parser.error('--follow-width must be between 0.03 and 0.8')
     if not (args.no_drive or args.no_controller or args.controller_only or args.camera_only) and args.poll_interval > 0.5:
         parser.error('--poll-interval must be at most 0.5 seconds while driving')
     args.camera_config = config_from_arguments(args, parser)
-    args.follow_config = FollowConfig(button=args.follow_button, desired_width=args.follow_width, max_power=args.follow_power)
+    args.follow_config = FollowConfig(button=args.follow_button, desired_width=args.follow_width,
+                                     distance_scale=args.follow_distance_scale,
+                                     max_power=args.follow_power, min_power=args.follow_min_power,
+                                     turn_limit=args.follow_turn_limit, pulse_seconds=args.follow_pulse_ms / 1000,
+                                     **{f'{axis}_{term}': getattr(args, f'follow_{axis}_{term}')
+                                        for axis in ('yaw', 'distance') for term in ('kp', 'ki', 'kd')})
     return args
 
 
@@ -72,7 +93,7 @@ def main(argv=None):
     camera = CameraMonitor(args.camera_config)
     monitor = None if args.controller_only or args.camera_only else SerialMonitor(
         args.port, args.baud, args.poll_interval, controller_source=source, max_power=args.max_power,
-        vision_source=camera.snapshot, follow_config=args.follow_config)
+        vision_source=camera.snapshot, follow_config=args.follow_config, manual_power=args.manual_power)
     stopping = threading.Event()
     toggles = []
     previous_handlers = {}

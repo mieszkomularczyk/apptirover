@@ -69,13 +69,32 @@ class CameraStateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_cli_modes_and_validation(self):
+        defaults = arguments([])
+        self.assertIsNone(defaults.follow_config.desired_width)
+        self.assertEqual(defaults.follow_config.distance_scale, 1.25)
+        self.assertEqual(defaults.follow_config.pulse_seconds, .06)
+        self.assertEqual(defaults.follow_config.turn_limit, .25)
+        self.assertEqual(defaults.follow_config.max_power, 1)
+        self.assertEqual(defaults.follow_config.min_power, .5)
+        self.assertEqual(defaults.manual_power, .5)
+        self.assertEqual(defaults.max_power, 1)
+        tuned = arguments(['--follow-distance-scale', '1.4', '--follow-pulse-ms', '40',
+                           '--follow-turn-limit', '.2', '--follow-yaw-kp', '.4', '--follow-yaw-ki', '.6'])
+        self.assertEqual(tuned.follow_config.distance_scale, 1.4)
+        self.assertEqual(tuned.follow_config.pulse_seconds, .04)
+        self.assertEqual(tuned.follow_config.turn_limit, .2)
+        self.assertEqual((tuned.follow_config.yaw_kp, tuned.follow_config.yaw_ki), (.4, .6))
         self.assertFalse(arguments(['--controller-only']).camera_config.enabled)
         self.assertTrue(arguments(['--camera-only']).camera_config.enabled)
         self.assertTrue(arguments(['--no-detection']).camera_config.no_detection)
         for flags in (['--camera-only', '--no-camera'], ['--camera-width', '641'],
                       ['--camera-fps', '0'], ['--confidence', 'nan'], ['--stream-host', '0.0.0.0'],
                       ['--rtsp-path', '/$(command)'], ['--rtsp-host', ''], ['--follow-width', '0'],
-                      ['--follow-power', 'nan'], ['--follow-button', 'nonexistent']):
+                      ['--follow-power', 'nan'], ['--follow-min-power', '-1'],
+                      ['--follow-distance-scale', '.9'], ['--follow-pulse-ms', '20'],
+                      ['--follow-pulse-ms', 'nan'], ['--follow-turn-limit', '0'],
+                      ['--follow-yaw-kp', '-1'], ['--follow-distance-ki', 'inf'],
+                      ['--follow-button', 'nonexistent']):
             with self.subTest(flags=flags), patch('sys.stderr', new=io.StringIO()), self.assertRaises(SystemExit):
                 arguments(flags)
 

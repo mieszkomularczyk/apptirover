@@ -8,24 +8,36 @@ person detection and X-controlled person following implemented.
 
 ### Person following (latest change)
 
-Controller X toggles following after the existing neutral/health interlocks.
+Only controller X toggles following mode; neutral/health interlocks govern motion.
 The rover acquires a persistent person over about one second, locks their track,
 centers them and drives forward or reverses using logarithmic apparent width.
-Default width is 0.15; following power is capped at 0.25 and the global power
-limit. Driving-axis input cancels following and takes manual control; centering
-does not resume it. A new X press is required after cancellation or recovery.
+Default distance reference is 1.25 times the initially acquired person's width,
+learned once per X session; `--follow-distance-scale` adjusts how close to stay
+and `--follow-width` optionally sets a fixed reference. Bounded PID with lower
+proportional gains and integral action requests average effort; small requests
+use 60 ms pulses at 50% power with proportional off time. Pure-turn average
+demand is capped at 25%; larger translation requests use continuous PWM up to
+100%. Average demand ramps; pulse amplitudes apply immediately. Pulse duration,
+turn limit and both PID gains are configurable. Manual driving remains capped at 50% independently; global
+`--max-power` (default 1) caps both modes. Driving-axis input temporarily takes manual control; neutral
+resumes following automatically. Losing the person stops motion but leaves the
+mode enabled for automatic reacquisition. X again disables the mode.
 
 NCNN's isolated process also runs bounded ByteTrack-style strong/weak association
 and source-time Kalman filters. Main-process control receives small track
-snapshots, performs target selection and bounded PD, and retains one UART owner.
+snapshots, performs target selection and bounded PID, and retains one UART owner.
 Only real, unambiguous observations at most 250 ms old authorize autonomous
-movement. Target loss, stale input, detection disable and restarts cancel it.
-The reference's unbounded stale-command behavior and nearby-person substitution
-are not reused. No new runtime dependencies were added.
+movement. Target loss, stale input, detection disable and restarts suspend motion
+without changing the X mode. Fresh data automatically resumes/reacquires the
+person. A unique nearby replacement ID may bridge brief ID changes; longer loss
+starts acquisition again. No new runtime dependencies were added.
 
 Configuration, algorithms, limitations and simulated/real-process verification
-are in [docs/following.md](docs/following.md). The physical controller X mapping
-and mobile following/motor tuning still require a coordinated physical test.
+are in [docs/following.md](docs/following.md). The user confirmed X activates
+following but reported no movement with the earlier small motor requests.
+The user subsequently confirmed improved motion, then reported aggressive turns
+and excessive following distance. The latest pulse timing, gentler steering,
+closer reference and revised integral controller still need a physical retry.
 The future design later in this document is historical where it conflicts with
 this implementation: current manual control needs no shoulder button and
 automatic reverse is explicitly user-approved.
@@ -87,7 +99,8 @@ enabled. `--no-drive` retains stationary telemetry/input diagnostics.
 Left Y is inverted to form forward throttle; right X controls nose-right turning.
 Both inputs use the existing 8% center deadzone. Left X and right Y do not drive.
 Mix left/right as `throttle + turn` and `throttle - turn`; normalize both by the
-same factor if either exceeds magnitude 1, then apply `--max-power` (default 0.5).
+same factor if either exceeds magnitude 1, then apply `--manual-power` (default 0.5)
+and the global `--max-power` cap (default 1).
 This supports forward/reverse curves and on-the-spot turns. No drive-enable button
 is needed in this version; both driving axes must first remain centered for 250 ms
 after startup, reconnection, or a fault. Manual input overrides explicitly
@@ -103,9 +116,11 @@ velocity mode is not used for this encoderless chassis. No vendor code is copied
 
 The existing serial worker is the sole motor-command writer. It evaluates input
 at up to 50 Hz and refreshes both motor outputs at up to 20 Hz, independently of
-the display. Changes ramp at 200 percentage points of full power per second,
-with a common interpolation factor for both sides. Neutral and fault stops bypass
-the ramp. Latest input replaces old state; there is no queued motion backlog.
+the display. Pulse edges and stops are sent on the current control tick. Manual
+power and average following demand ramp at 200 percentage points of full power
+per second, with a common interpolation factor for both sides; short following
+pulses immediately apply breakaway power. Neutral and fault stops bypass the
+ramp. Latest input replaces old state; there is no queued motion backlog.
 The display distinguishes commanded power from board-reported L/R fields.
 
 Drive stops and requires neutral again on controller input loss, changed input
@@ -574,15 +589,14 @@ Proposed physical button layout, subject to checking the actual input events:
 | R shoulder, held | Manual drive enable; pressing it also takes over from autonomy |
 | B | Immediate latched stop in any mode |
 | Plus/Start | Re-arm to manual ready, with neutral sticks, R released, and faults cleared |
-| X | Toggle following on/off with neutral sticks to activate (implemented) |
+| X | Toggle following mode on/off; health/neutral interlocks govern motion (implemented) |
 | D-pad up/down | Select a bounded drive-power limit |
 
-Any deliberate drive-stick movement beyond the takeover deadzone cancels
-following immediately, even without R held. With R released it stops; with R
-held the controller supplies the new drive request. Releasing R returns to zero
-and manual ready. Returning the sticks to center never restarts autonomy.
-Following must be enabled again explicitly. A camera or autonomy restart also
-must not re-enable it.
+Current implemented behavior supersedes the original cancellation proposal:
+driving-stick movement has manual priority without R held. Returning the driving
+axes to neutral resumes following while its X-controlled mode remains enabled.
+Target loss and camera faults suspend movement, then reacquire automatically.
+Only X changes that mode; a new application starts with following disabled.
 
 Use calibrated axes, a deadzone with hysteresis, and bounded differential mixing.
 Normalize combined throttle/turn input before scaling to the rover's allowed
@@ -691,10 +705,10 @@ Proposed initial behavior:
    close enough. Do not present this as distance in metres.
 5. Automatic reverse is now implemented when the target is too close, as
    explicitly requested by the user; this supersedes the initial forward-only proposal.
-6. Stop and cancel following on missing, old, uncertain, or ambiguous target
-   data, a camera restart, lost controller, lost rover connection, or override.
-   Require explicit re-enable; do not keep driving during a search or silently
-   reacquire another person.
+6. Stop autonomous motion on missing, old, uncertain or ambiguous target data,
+   camera restart, controller/rover faults or manual override. Keep the X mode
+   enabled, respect health/neutral interlocks, and automatically reacquire/resume
+   when valid data and neutral sticks return. Only X disables following.
 
 No depth sensor, obstacle sensor, or wheel encoders have been confirmed. The first
 behavior is therefore supervised visual following in a clear test area, without
@@ -777,8 +791,8 @@ These are future implementation and validation steps, not actions performed now.
 | 2. Core, master script, and stop rules | Establish Python/venv, master launch, initial CLI status, one serial owner, authority state machine, bounded motion, and stop handling | Status appears with missing/disconnected devices; simulated tests reject stale commands; controlled motor tests verify direction, zero output, and firmware timeout |
 | 3. Controller lifecycle | Automatic enrollment, persistent bonding, reconnection, calibrated inputs, manual driving | First pairing needs only controller pairing mode; power cycling either side reconnects; reconnect remains disarmed |
 | 4. Camera integration (implemented) | Reuse pipeline with the replacement camera; separate camera/AI processes and timestamped metadata | RTSP/person boxes verified; detection toggles/failures preserve video; camera failures preserve simulated control |
-| 5. Following | Target selection/continuity, bounded steering and approach, controller cancellation | Target loss stops; close target stops approach; ambiguous people do not cause silent target switching |
-| 6. Boot and combined operation | Service lifecycle, status, long-running load and failure checks | No login needed; repeated startup/recovery never resumes movement; camera load does not defeat override |
+| 5. Following | Target selection/continuity, bounded steering/forward/reverse, temporary manual priority | Loss pauses motion and reacquires; joystick release resumes; X alone toggles the mode |
+| 6. Boot and combined operation | Service lifecycle, status, long-running load and failure checks | New app starts with following off; enabled-mode recovery requires fresh targets and cleared health/neutral interlocks; camera load does not defeat manual priority |
 
 Essential behavioral checks during those stages:
 
@@ -791,7 +805,7 @@ Essential behavioral checks during those stages:
 - Override during following while the camera, inference, or autonomy is slow or
   hung. Check that delayed autonomy messages cannot regain authority.
 - Flood normal requests and verify stop bypasses pending motion and smoothing.
-  Releasing R stops; centering the sticks does not resume following.
+  X disables following; neutral resumes the enabled mode after manual override.
 - Disconnect the camera, send empty detections, delay metadata, restart the
   pipeline, and present multiple crossing people. Check source age and target loss.
 - Interrupt UART, restart the core, and terminate it abruptly. Verify the actual

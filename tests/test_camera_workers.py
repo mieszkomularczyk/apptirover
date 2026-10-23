@@ -34,7 +34,7 @@ class WorkerLifecycleTests(unittest.TestCase):
         channel = Mock()
         channel.recv.side_effect = [b'frame', BlockingIOError(), b'frame', BlockingIOError(), b'stop']
         detector = Mock()
-        detector.predict.return_value = [[.4, .1, .6, .9, .9, 0]]
+        detector.predict.return_value = [[.4, .1, .6, .9, .4, 0]]
         with patch('apptirover.vision.detection.Detector', return_value=detector), \
                 patch('apptirover.vision.detection.select.select', return_value=([channel], [], [])), \
                 patch('apptirover.vision.lifecycle.die_with_parent'), \

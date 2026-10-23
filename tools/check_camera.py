@@ -116,18 +116,24 @@ def main():
                          'Following did not reverse for a close person')
                 print('Following:', json.dumps(serial.snapshot()['drive']), flush=True)
                 pad['input']['sticks']['right_x'] = .5
-                wait_for(lambda: not serial.snapshot()['drive']['following']['active'], 'Manual input did not cancel following')
+                wait_for(lambda: serial.snapshot()['drive']['following']['manual_override'], 'Manual input did not take priority')
+                assert serial.snapshot()['drive']['following']['enabled']
                 pad['input']['sticks']['right_x'] = 0
-                wait_for(lambda: serial.snapshot()['drive']['left_power'] == 0, 'Takeover neutral did not stop')
-                assert not serial.snapshot()['drive']['following']['active']
+                wait_for(lambda: serial.snapshot()['drive']['following']['state'] == 'following', 'Neutral did not resume following')
+                wait_for(lambda: serial.snapshot()['drive']['left_power'] < 0 and serial.snapshot()['drive']['right_power'] < 0,
+                         'Following did not resume reverse after manual input')
                 pad['input']['button_presses']['BTN_NORTH'] = 2
+                wait_for(lambda: not serial.snapshot()['drive']['following']['enabled'], 'X did not disable following')
+                wait_for(lambda: serial.snapshot()['drive']['left_power'] == 0, 'X did not stop motors')
+                pad['input']['button_presses']['BTN_NORTH'] = 3
                 wait_for(lambda: serial.snapshot()['drive']['following']['state'] == 'following', 'Explicit X did not re-enable', 5)
             first_pid = camera.snapshot()['detector_pid']
             before = decoded()
             camera.set_detection(False)
             assert not camera.snapshot()['observation_valid']
             if args.follow_check:
-                wait_for(lambda: not serial.snapshot()['drive']['following']['active'], 'Detection disable did not cancel following')
+                wait_for(lambda: not serial.snapshot()['drive']['following']['motion_active'], 'Detection disable did not suspend motion')
+                assert serial.snapshot()['drive']['following']['enabled']
                 assert serial.snapshot()['drive']['left_power'] == 0
                 pad['input']['sticks']['left_y'] = -.5
             wait_for(lambda: camera.snapshot()['detector_pid'] is None, 'Detector did not stop')
@@ -135,7 +141,8 @@ def main():
             camera.set_detection(True)
             wait_for(lambda: camera.snapshot()['observation_valid'], 'Detection did not resume', 50)
             assert camera.snapshot()['detector_pid'] != first_pid
-            assert not serial.snapshot()['drive']['following']['active'], 'Recovery silently resumed following'
+            if args.follow_check:
+                assert serial.snapshot()['drive']['following']['enabled'], 'Recovery disabled the X mode'
 
             before = decoded()
             os.kill(camera.snapshot()['detector_pid'], signal.SIGKILL)
@@ -165,6 +172,12 @@ def main():
                                       capture_output=True, timeout=12)
             assert receiver.returncode == 0, receiver.stderr.decode()
             pad['input']['sticks']['left_y'] = 0
+            if args.follow_check:
+                wait_for(lambda: serial.snapshot()['drive']['following']['state'] == 'following', 'Following did not resume after recovery', 5)
+                wait_for(lambda: serial.snapshot()['drive']['left_power'] < 0 and serial.snapshot()['drive']['right_power'] < 0,
+                         'Automatic following did not request reverse after recovery')
+                pad['input']['button_presses']['BTN_NORTH'] = 4
+                wait_for(lambda: not serial.snapshot()['drive']['following']['enabled'], 'Final X disable failed')
             wait_for(lambda: serial.snapshot()['drive']['left_power'] == 0, 'Neutral did not stop')
             result = serial.snapshot()
             assert result['telemetry_packets'] > 100 and result['invalid_lines'] == 0, result

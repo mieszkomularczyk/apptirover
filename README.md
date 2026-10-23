@@ -115,21 +115,38 @@ Once the Drive row says **ready**, no extra button is needed:
 | X | Toggle person following; press again to stop it |
 
 Left-stick horizontal and right-stick vertical inputs are ignored for driving.
-Controller **X** toggles person following. Any deliberate driving-axis movement
-cancels following; returning to neutral never resumes it. Default manual maximum power is **50%**.
-While following, centered sticks allow autonomy to continue; use X to stop it.
-Use `--max-power 0.3` for 30%, or another fraction from 0.05 to 1. DC motors may
-not start at small tilts; no automatic minimum-power jump is added.
+Controller **X** alone toggles person-following mode. Driving-axis movement has
+priority while held; returning to neutral automatically resumes following while
+the mode is enabled. Losing the person stops motion and waits for reacquisition
+without turning the mode off. Default manual maximum power is **50%**. Following
+uses **60 ms pulses at 50% power** for small corrections, with off time set by
+the PID request. Larger translation requests use continuous PWM up to 100%.
+Average demand ramps; pulse power preserves the left/right ratio. Steering has
+less proportional gain and bounded integral action, with pure-turn average
+demand capped at 25%. Tune pulse duration with `--follow-pulse-ms`.
+Press X and wait for `ON/follow`: the acquired person's width multiplied by
+**1.25** becomes the distance reference, asking the rover to follow closer.
+`--follow-distance-scale 1` holds the acquisition distance; larger values ask
+for a closer distance. `--follow-width .20` selects a fixed width instead.
+Walking away requests forward motion; approaching beyond the reference requests reverse.
+Use X to turn following off; centered sticks allow enabled following to continue.
+Use `--manual-power 0.3` to cap manual driving at 30%. `--max-power` is a hard
+cap on both modes (default 1.0); e.g. `--max-power 0.3` limits both to 30%.
+Manual control has no automatic minimum-power jump; DC motors may not start at
+small tilts.
 
 The Pi mixes `left = throttle + turn`, `right = throttle - turn`, scales both
 together to stay within the power limit, and sends both sides in one `T=1` JSON
 command. The board drives each side's motors together. Turning right always turns
 the nose right, including when reversing. The rover has no encoders: proportional
-PWM adjusts motor power, not a measured speed in m/s. Ordinary changes ramp;
-centering or a fault bypasses the ramp and commands zero immediately.
+PWM adjusts motor power, not a measured speed in m/s. Manual power and average
+following demand ramp; individual pulses immediately apply their breakaway
+power. Centering manual sticks or a fault commands zero immediately.
 
 The serial worker evaluates controls at up to 50 Hz and refreshes motor commands
-at up to 20 Hz, independently of terminal rendering. It stops and requires neutral
+at up to 20 Hz, with pulse edges/stops sent immediately on the 50 Hz control
+tick, independently of terminal rendering. These are software torque pulses;
+the motor board's PWM carrier frequency is unchanged. It stops and requires neutral
 again after input-device loss, a drive-loop gap or controller-worker health older than 250 ms, BlueZ
 status older than 750 ms, chassis feedback older than one second, a UART reconnect,
 or dropped input events. Worker health is distinct from the age of the last changed

@@ -7,18 +7,18 @@ import serial
 
 from .protocol import BASE_QUERY, IMU_QUERY, JsonLines, STOP_COMMAND, WATCHDOG_COMMAND, motor_command
 from .telemetry import Telemetry
-from .drive import DriveControl
+from .drive import CONTROL_INTERVAL, DriveControl
 
 
 class SerialMonitor:
     def __init__(self, port, baud=115200, poll_interval=0.5, serial_factory=serial.Serial,
-                 controller_source=None, max_power=0.5, vision_source=None, follow_config=None):
+                 controller_source=None, max_power=1.0, vision_source=None, follow_config=None, manual_power=.5):
         self.state = Telemetry(port, baud)
         self.poll_interval = poll_interval
         self.serial_factory = serial_factory
         self.controller_source = controller_source
         self.vision_source = vision_source
-        self.drive = DriveControl(max_power, follow_config) if controller_source else None
+        self.drive = DriveControl(max_power, follow_config, manual_power) if controller_source else None
         self.drive_status = self.drive.snapshot() if self.drive else dict(enabled=False, armed=False, state='disabled')
         self.motion_commands = 0
         self.lock = threading.Lock()
@@ -113,11 +113,14 @@ class SerialMonitor:
                 with self.lock:
                     self.drive_status = control
                 power = (control['left_power'], control['right_power'])
-                if now >= next_motion or (power == (0, 0) and last_power != (0, 0)):
+                # Pulse starts/stops and safety stops must reach the board on
+                # this control tick; ordinary refreshes remain at 20 Hz.
+                edge = (power == (0, 0)) != (last_power == (0, 0))
+                if now >= next_motion or edge:
                     self.write_control(port, motor_command(*power))
                     last_power = power
                     next_motion = now + 0.05
-                next_control = now + 0.02
+                next_control = now + CONTROL_INTERVAL
             if now >= next_query:
                 if port.write(query) != len(query):
                     raise serial.SerialException("Incomplete telemetry query write")

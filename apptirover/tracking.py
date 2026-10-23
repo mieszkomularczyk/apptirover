@@ -133,8 +133,9 @@ class Track:
 
 
 class PersonTracker:
-    def __init__(self, high_threshold=.35, low_threshold=.1, new_threshold=.5,
+    def __init__(self, high_threshold=.35, low_threshold=.1, new_threshold=None,
                  retention=.75, max_tracks=32):
+        new_threshold = high_threshold if new_threshold is None else new_threshold
         if not 0 < low_threshold < high_threshold <= new_threshold <= 1:
             raise ValueError('Tracking thresholds must satisfy 0 < low < high <= new <= 1')
         self.high, self.low, self.new = high_threshold, low_threshold, new_threshold
