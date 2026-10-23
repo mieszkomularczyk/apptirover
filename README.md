@@ -9,6 +9,18 @@ complete remote **ffplay command is always shown above the status table**.
 
 ## Run
 
+The all-in-one ARM64 Linux executable includes Python, camera libraries and the
+YOLO/NCNN model. Launch it on this Pi without activating a virtual environment:
+
+```bash
+./dist/apptirover
+```
+
+You can copy that single file to another directory; all existing CLI options
+still work. It targets this Pi's Debian 13 / 64-bit Raspberry Pi OS environment.
+See [building and checking the executable](docs/executable.md) for rebuilding
+after source changes and using it on a compatible Pi.
+
 The Python virtual environment is already prepared on this Pi:
 
 ```bash

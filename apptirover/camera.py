@@ -12,9 +12,10 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
-import sys
 import threading
 import time
+
+from .launcher import camera_worker_command
 
 
 @dataclass
@@ -244,8 +245,7 @@ class CameraMonitor:
                     with self.lock:
                         worker_config['no_detection'] = not self.desired_detection
                     self.process = subprocess.Popen(
-                        [sys.executable, '-m', 'apptirover.vision.worker', str(child.fileno()),
-                         json.dumps(worker_config), str(os.getpid())],
+                        camera_worker_command(str(child.fileno()), json.dumps(worker_config), str(os.getpid())),
                         pass_fds=(child.fileno(),), start_new_session=True,
                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         cwd=str(Path(__file__).resolve().parents[1]),

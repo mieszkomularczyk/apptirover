@@ -6,6 +6,17 @@ person detection and X-controlled person following implemented.
 
 ## Current implementation
 
+### Single-file executable
+
+`dist/apptirover` is a built ARM64 Linux executable (about 103 MiB) containing
+Python, the application, native camera/AI libraries and the YOLO26n NCNN model.
+It runs without the checkout or venv, with the same CLI flags and separate
+camera/inference processes. The build targets this Pi's Debian 13 environment;
+host D-Bus/BlueZ, hardware access and device permissions still come from the OS.
+Rebuild after source changes with `.venv/bin/python tools/build_executable.py`.
+The build recipe, 104-test verification and copied-binary RTSP/NCNN/pseudo-UART
+check are described in [docs/executable.md](docs/executable.md).
+
 ### Person following (latest change)
 
 Only controller X toggles following mode; neutral/health interlocks govern motion.

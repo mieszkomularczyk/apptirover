@@ -10,6 +10,12 @@ import sys
 
 
 def load_bindings():
+    if getattr(sys, 'frozen', False):
+        # The executable supplies its ABI-matched GI/Cairo and typelibs. Never
+        # fall back to a different system Python's extension modules.
+        gi = importlib.import_module('gi')
+        importlib.import_module('cairo')
+        return gi
     native = str(Path(sys.base_prefix) / 'lib/python3/dist-packages')
     added = native not in sys.path
     if added:

@@ -1,6 +1,6 @@
 """Launch the apptirover telemetry status screen."""
 
-from apptirover.app import main
+from apptirover.launcher import main
 
 
 if __name__ == "__main__":

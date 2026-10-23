@@ -10,13 +10,14 @@ from types import SimpleNamespace
 from .lifecycle import die_with_parent
 
 
-def main():
-    channel = socket.socket(fileno=int(sys.argv[1]))
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    channel = socket.socket(fileno=int(argv[0]))
     channel.setblocking(False)
     try:
-        die_with_parent(int(sys.argv[3]))
+        die_with_parent(int(argv[2]))
         os.nice(5)
-        config = json.loads(sys.argv[2])
+        config = json.loads(argv[1])
         config['model'] = Path(config['model'])
         config['image'] = Path(config['image']) if config['image'] else None
         from .stream import CameraServer
