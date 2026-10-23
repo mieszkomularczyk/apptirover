@@ -1,0 +1,3 @@
+[submodule "libs/YOLOs-CPP-TensorRT"]
+	path = libs/YOLOs-CPP-TensorRT
+	url = https://github.com/Geekgineer/YOLOs-CPP-TensorRT.git

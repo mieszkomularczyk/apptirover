@@ -1,0 +1,119 @@
+# === Base image with Ultralytics + PyTorch + CUDA ===
+FROM ultralytics/ultralytics@sha256:515cd48a0d17148ed7e6f08f54c8fa464ae4cade48a4f2c0bde53498d202e766
+
+# --- Environment setup ---
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC \
+    ROS_DISTRO=humble \
+    WORKSPACE=/workspace
+
+WORKDIR ${WORKSPACE}
+
+# --- Install ROS2 ---
+# Install basic dependencies (no setuptools from apt)
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-dev \
+    build-essential \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt update && apt install -y --no-install-recommends \
+    software-properties-common
+
+RUN add-apt-repository -y universe
+
+RUN apt update && apt install -y curl gnupg2 lsb-release
+
+# Set up ROS2 repository
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+# Install ROS2 stuff
+RUN apt-get update && apt-get install -y \
+    ros-${ROS_DISTRO}-ros-base \
+    ros-${ROS_DISTRO}-rmw-fastrtps-cpp \
+    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+    python3-rosdep \
+    python3-colcon-common-extensions \
+    && rm -rf /var/lib/apt/lists/*
+
+# Initialize rosdep
+RUN rosdep init 2>/dev/null || true && rosdep update
+
+# Ensure correct pip, wheel, setuptools version
+RUN python3 -m pip install --upgrade pip wheel setuptools==68
+
+# --- Finish of ROS2 installation ---
+
+# Gstreamer stuff
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git pkg-config \
+    libgtk-3-dev libavcodec-dev libavformat-dev libswscale-dev \
+    libgstreamer1.0-0 libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+    gstreamer1.0-libav gstreamer1.0-tools \
+    gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl \
+    gstreamer1.0-gtk3 gstreamer1.0-qt5 \
+    gstreamer1.0-pulseaudio gstreamer1.0-rtsp \
+    libgstrtspserver-1.0-dev \
+    python3-gi python3-gst-1.0 \
+    gir1.2-gst-rtsp-server-1.0 \
+    libjpeg-dev libpng-dev libtiff-dev \
+    libv4l-dev v4l-utils \
+    libx264-dev libx265-dev \
+    python3-numpy \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- External libs ---
+COPY libs libs/
+
+# Install TensorRT lib
+RUN cd libs/YOLOs-CPP-TensorRT && mkdir -p build && cd build && \
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CUDA_ARCHITECTURES="72;87" \
+        -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
+    && make -j"$(nproc)"
+
+# Install GO2 sdk stuff
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg2 \
+    lsb-release \
+    python3-pip \
+    portaudio19-dev \
+    mesa-utils \
+    libgl1-mesa-glx \
+    libgl1-mesa-dri \
+    ffmpeg
+
+# --- End of external libs ---
+
+# Copy full source code (breaks cache only when source changes)
+COPY src/ ${WORKSPACE}/src/
+
+# Install dependencies
+RUN apt-get update && rosdep install --from-paths src --ignore-src -r -y --rosdistro $ROS_DISTRO
+
+# Install Python dependencies from requirements.txt files if they exist
+RUN set -e; \
+    if find src -type f -name "requirements.txt" | grep -q .; then \
+        echo "Installing Python requirements from requirements.txt files..."; \
+        find src -type f -name "requirements.txt" -exec pip3 install -r {} \; ; \
+    else \
+        echo "No requirements.txt found — skipping pip install."; \
+    fi
+
+RUN pip install --ignore-installed blinker && \
+    pip install -r src/go2_ros2_sdk/requirements.txt
+RUN pip install numpy==1.26.4
+
+# --- Setup entrypoint (ROS environment + user script) ---
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

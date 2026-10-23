@@ -1,0 +1,19 @@
+follower:
+  ros__parameters:
+    control_loop_hz: 20.0
+
+    # Horizontal (yaw) control: drive bbox center_x to desired_x
+    desired_x: 0.5
+    angular_pid:
+      kp: 5.0
+      ki: 3.0
+      kd: 1.7
+    max_angular_z: 1.0
+
+    # Distance (forward) control: drive bbox size_x to desired_size_x
+    desired_size_x: 0.15
+    linear_pid:
+      kp: 2.0
+      ki: 0.0
+      kd: 0.1
+    max_linear_x: 3.0

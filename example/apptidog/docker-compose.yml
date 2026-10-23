@@ -1,0 +1,47 @@
+services:
+  base:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.base
+    image: base
+    container_name: base
+    working_dir: /workspace
+
+  runtime:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.runtime
+    image: runtime
+    privileged: true
+    runtime: nvidia
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    environment:
+      - YOLO_OFFLINE=true
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_DOMAIN_ID=0
+      - ROS_LOCALHOST_ONLY=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - VIDEO_DESTINATION_IP=192.168.50.68
+      # GO2 config
+      - ROBOT_IP=192.168.123.161
+      - CONN_TYPE=webrtc
+      - WEBRTC_SERVER_HOST=0.0.0.0
+      - WEBRTC_SERVER_PORT=9991
+      - GO2_AES_128_KEY=${GO2_AES_128_KEY:-}
+    volumes:
+      - ./src:/workspace/src:ro
+      - /dev/v4l:/dev/v4l:ro
+    devices:
+      - /dev:/dev:rw
+    container_name: dog
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: >
+      ros2 launch src/bringup/launch/bringup.launch.py

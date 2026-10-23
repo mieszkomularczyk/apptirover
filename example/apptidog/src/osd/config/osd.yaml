@@ -1,0 +1,12 @@
+/osd:
+  ros__parameters:
+    # Input image topic
+    image_topic: "/usb_camera/image_raw"
+    is_compressed: false
+    
+    # Input annotations/markers topic
+    annotations_topics: ["/tracker/markers", "/target_tracker/markers"]
+
+    # Output settings
+    output_compressed: false
+    jpeg_quality: 80

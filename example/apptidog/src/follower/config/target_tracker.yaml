@@ -1,0 +1,26 @@
+target_tracker:
+  ros__parameters:
+    # Upstream topics/services (this instance follows the RGB pipeline)
+    detections_topic: "/tracker/detections"
+    image_topic: "/usb_camera/image_raw"
+    yolo_enable_service: "/yolo/enable"
+    tracker_enable_service: "/tracker/enable"
+
+    visible_window_sec: 1.0
+    visible_threshold_percent: 0.8
+    invisible_window_sec: 3.0
+    invisible_threshold_percent: 0.8
+
+    # Bbox estimator (constant-velocity Kalman on center + size).
+    # Responsiveness scales with process_std / meas_std; raise process_std to track faster.
+    use_kalman_filter: true       # false -> raw detections, no filtering/coasting
+    filter_process_std: 1.0       # center accel noise (norm units/s^2)
+    filter_meas_std: 0.02         # center detection noise (norm units)
+    filter_size_process_std: 0.5  # size rate noise (norm units/s^2)
+    filter_size_meas_std: 0.02    # size detection noise (norm units)
+    gate_threshold: 3.0           # normalized dist to reject outliers
+    max_reject_count: 5           # consecutive rejects before hard reset
+
+    # Track-ID selection (which tracker.detections id to follow).
+    max_reacquire_distance: 0.08  # normalized dist to adopt a churned id
+    target_class_ids: ["person"]  # empty -> accept all classes
