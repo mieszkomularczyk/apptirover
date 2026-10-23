@@ -12,12 +12,13 @@ from .drive import DriveControl
 
 class SerialMonitor:
     def __init__(self, port, baud=115200, poll_interval=0.5, serial_factory=serial.Serial,
-                 controller_source=None, max_power=0.5):
+                 controller_source=None, max_power=0.5, vision_source=None, follow_config=None):
         self.state = Telemetry(port, baud)
         self.poll_interval = poll_interval
         self.serial_factory = serial_factory
         self.controller_source = controller_source
-        self.drive = DriveControl(max_power) if controller_source else None
+        self.vision_source = vision_source
+        self.drive = DriveControl(max_power, follow_config) if controller_source else None
         self.drive_status = self.drive.snapshot() if self.drive else dict(enabled=False, armed=False, state='disabled')
         self.motion_commands = 0
         self.lock = threading.Lock()
@@ -101,8 +102,14 @@ class SerialMonitor:
             if self.drive and now >= next_control:
                 # Pull current state in the serial worker, independently of terminal rendering.
                 pad, rover = self.controller_source(), self.snapshot()
+                try:
+                    vision = self.vision_source() if self.vision_source else None
+                except Exception:
+                    # Vision failure revokes following, while manual control and
+                    # telemetry retain their independent worker and UART owner.
+                    vision = None
                 now = time.monotonic()
-                control = self.drive.step(pad, rover, now)
+                control = self.drive.step(pad, rover, now, vision)
                 with self.lock:
                     self.drive_status = control
                 power = (control['left_power'], control['right_power'])

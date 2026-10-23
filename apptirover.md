@@ -1,12 +1,36 @@
 # apptirover
 
-Updated: 2026-09-25. Status: UART telemetry, Bluetooth pairing/input monitoring,
+Updated: 2026-10-23. Status: UART telemetry, Bluetooth pairing/input monitoring,
 proportional two-stick manual driving, USB RTSP camera streaming and optional
-person detection implemented. Autonomy remains a future stage.
+person detection and X-controlled person following implemented.
 
 ## Current implementation
 
-### Camera integration (latest change)
+### Person following (latest change)
+
+Controller X toggles following after the existing neutral/health interlocks.
+The rover acquires a persistent person over about one second, locks their track,
+centers them and drives forward or reverses using logarithmic apparent width.
+Default width is 0.15; following power is capped at 0.25 and the global power
+limit. Driving-axis input cancels following and takes manual control; centering
+does not resume it. A new X press is required after cancellation or recovery.
+
+NCNN's isolated process also runs bounded ByteTrack-style strong/weak association
+and source-time Kalman filters. Main-process control receives small track
+snapshots, performs target selection and bounded PD, and retains one UART owner.
+Only real, unambiguous observations at most 250 ms old authorize autonomous
+movement. Target loss, stale input, detection disable and restarts cancel it.
+The reference's unbounded stale-command behavior and nearby-person substitution
+are not reused. No new runtime dependencies were added.
+
+Configuration, algorithms, limitations and simulated/real-process verification
+are in [docs/following.md](docs/following.md). The physical controller X mapping
+and mobile following/motor tuning still require a coordinated physical test.
+The future design later in this document is historical where it conflicts with
+this implementation: current manual control needs no shoulder button and
+automatic reverse is explicitly user-approved.
+
+### Camera integration
 
 Camera support is integrated from `/home/mieszko/rovercam` into this repository.
 The user replaced the old Arducam with a working USB camera reporting
@@ -28,9 +52,9 @@ watchdog writes. On short terminals, secondary rows are omitted to preserve the
 playback command and essential status. Plain/JSON retain all fields.
 
 Fresh observations include normalized person boxes, confidence, source and
-completion timestamps, and process/capture/detection generations. They are ready
-for a future follower, but no target tracking, autonomy or motor arbitration was
-added. Manual control mapping and safety interlocks are unchanged.
+completion timestamps, and process/capture/detection generations. The later
+following extension above adds worker-side tracks and motor arbitration while
+preserving the manual stick mapping and existing health interlocks.
 
 The one-minute stationary real-camera test produced 1,771 encoded frames, roughly
 30 FPS video and 15 detections/sec, with median inference about 22 ms and no
@@ -66,7 +90,8 @@ Mix left/right as `throttle + turn` and `throttle - turn`; normalize both by the
 same factor if either exceeds magnitude 1, then apply `--max-power` (default 0.5).
 This supports forward/reverse curves and on-the-spot turns. No drive-enable button
 is needed in this version; both driving axes must first remain centered for 250 ms
-after startup, reconnection, or a fault. Controller input is the only motion source.
+after startup, reconnection, or a fault. Manual input overrides explicitly
+X-enabled following.
 
 The board accepts both sides together in `T=1` with floating-point L/R values.
 The vendor [motor implementation](https://github.com/waveshareteam/ugv_base_general/blob/main/General_Driver/movtion_module.h)
@@ -549,7 +574,7 @@ Proposed physical button layout, subject to checking the actual input events:
 | R shoulder, held | Manual drive enable; pressing it also takes over from autonomy |
 | B | Immediate latched stop in any mode |
 | Plus/Start | Re-arm to manual ready, with neutral sticks, R released, and faults cleared |
-| X | Explicitly enter following from manual ready when all prerequisites pass |
+| X | Toggle following on/off with neutral sticks to activate (implemented) |
 | D-pad up/down | Select a bounded drive-power limit |
 
 Any deliberate drive-stick movement beyond the takeover deadzone cancels
@@ -566,9 +591,8 @@ motor response; do not add an unexpected minimum-power jump. Smooth ordinary
 changes but let stop requests bypass acceleration smoothing. These are power
 limits until actual physical speeds have been measured.
 
-The R/B/Start/X button actions in this proposed autonomy design are not enabled
-in the current manual version. Current manual driving uses the two sticks and
-the neutral interlock described above.
+The R/B/Start actions remain proposed. X now toggles following; current manual
+driving uses the two sticks and the neutral interlock described above.
 
 Proposed timing targets, all requiring later measurement:
 
@@ -665,8 +689,8 @@ Proposed initial behavior:
 4. Use apparent person-box size as an initial closeness signal with a tunable
    target band. Reduce forward power as the target fills that band; stop when
    close enough. Do not present this as distance in metres.
-5. Begin with forward following only; do not reverse automatically when the
-   target approaches the camera. Manual reverse remains available.
+5. Automatic reverse is now implemented when the target is too close, as
+   explicitly requested by the user; this supersedes the initial forward-only proposal.
 6. Stop and cancel following on missing, old, uncertain, or ambiguous target
    data, a camera restart, lost controller, lost rover connection, or override.
    Require explicit re-enable; do not keep driving during a search or silently

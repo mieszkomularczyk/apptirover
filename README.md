@@ -3,7 +3,8 @@
 Drive the plain WAVE ROVER from an 8BitDo Lite 2 through this Raspberry Pi 5.
 The app pairs/reconnects the controller and displays grouped, colored telemetry
 with fixed columns for battery, motor output, joysticks, IMU/gyro, and system health.
-It also streams USB camera video over RTSP with optional person detection. The
+It also streams USB camera video over RTSP with optional person detection and
+X-controlled person following, including reverse when the person is too close. The
 complete remote **ffplay command is always shown above the status table**.
 
 ## Run
@@ -53,7 +54,8 @@ The main app receives small timestamped observations, never video frames. Camera
 or detector failures do not disable manual control, and detector failure leaves
 video running. CPU thread limits, bounded queues and freshness checks keep old
 work from accumulating. The existing serial worker remains the only motor writer.
-No autonomous driving or person tracking has been added.
+Tracking runs in the inference process; following starts disabled until a
+controller X press. See [person following](docs/following.md).
 
 Use `--stream-host HOST` to choose the address shown in the ffplay command,
 `--camera-device PATH` to select a camera, and `--detection-fps N` to limit AI
@@ -109,10 +111,13 @@ Once the Drive row says **ready**, no extra button is needed:
 | Right stick left/right | Turn the nose left/right, proportional to tilt |
 | Both together | Drive a curve with different left/right motor powers |
 | Right stick alone | Turn on the spot with opposite wheel directions |
-| Center both driving axes | Stop immediately |
+| Center both driving axes | Stop manual driving immediately |
+| X | Toggle person following; press again to stop it |
 
 Left-stick horizontal and right-stick vertical inputs are ignored for driving.
-Buttons currently have no driving actions. Default maximum power is **50%**.
+Controller **X** toggles person following. Any deliberate driving-axis movement
+cancels following; returning to neutral never resumes it. Default manual maximum power is **50%**.
+While following, centered sticks allow autonomy to continue; use X to stop it.
 Use `--max-power 0.3` for 30%, or another fraction from 0.05 to 1. DC motors may
 not start at small tilts; no automatic minimum-power jump is added.
 
@@ -210,7 +215,9 @@ reconnection, Bluetooth input identity, normalization, button release, dropped
 event recovery, and clearing controls on disconnect. Tests do not move the real
 rover or access Bluetooth. Drive tests exercise proportional mixing, power limits,
 neutral interlocks, fault stops, stale health, actual serial framing/final stop,
-and fixed positions for changing signed screen values.
+and fixed positions for changing signed screen values. Following tests cover
+counted X presses, association/empty frames, acquisition/ambiguity, forward/reverse,
+manual takeover, freshness, restarts and simulated UART stop behavior.
 
 On 2026-09-25 the live monitor completed a 12-second test on this rover with
 44 telemetry replies, 44 echoes, no invalid lines, and no reconnects. Battery was

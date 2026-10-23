@@ -74,7 +74,8 @@ class CameraStateTests(unittest.TestCase):
         self.assertTrue(arguments(['--no-detection']).camera_config.no_detection)
         for flags in (['--camera-only', '--no-camera'], ['--camera-width', '641'],
                       ['--camera-fps', '0'], ['--confidence', 'nan'], ['--stream-host', '0.0.0.0'],
-                      ['--rtsp-path', '/$(command)'], ['--rtsp-host', '']):
+                      ['--rtsp-path', '/$(command)'], ['--rtsp-host', ''], ['--follow-width', '0'],
+                      ['--follow-power', 'nan'], ['--follow-button', 'nonexistent']):
             with self.subTest(flags=flags), patch('sys.stderr', new=io.StringIO()), self.assertRaises(SystemExit):
                 arguments(flags)
 

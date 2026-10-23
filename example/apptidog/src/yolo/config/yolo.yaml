@@ -1,9 +1,0 @@
-/**:
-  ros__parameters:
-    image_topic: "/usb_camera/image_raw"
-    is_compressed: false
-    model: "src/yolo/models/yolo11s_new.engine"
-    labels: "src/yolo/models/yolo.names"
-    threshold: 0.6
-    iou: 0.7
-    fps_interval: 5.0

@@ -1,6 +1,8 @@
-"""Differential manual drive, with neutral interlocks and expiring input health."""
+"""Single motion authority: faults, manual takeover, then expiring following."""
 
 import math
+
+from .following import Follower, PressToggle
 
 
 def mix(throttle, turn, max_power):
@@ -16,7 +18,7 @@ def mix(throttle, turn, max_power):
 
 
 class DriveControl:
-    def __init__(self, max_power=0.5):
+    def __init__(self, max_power=0.5, follow_config=None):
         mix(0, 0, max_power)
         self.max_power = max_power
         self.armed = False
@@ -26,19 +28,27 @@ class DriveControl:
         self.left = self.right = 0.0
         self.reason = 'waiting for controller and rover'
         self.throttle = self.turn = 0.0
+        self.follower = Follower(follow_config)
+        self.toggle = PressToggle(self.follower.config.button)
+        self.now = None
 
     def stop(self, reason):
+        if self.follower.active:
+            self.follower.cancel(reason + '; X to re-enable')
         self.armed = False
         self.neutral_since = None
         self.left = self.right = 0.0
         self.throttle = self.turn = 0.0
         self.reason = reason
 
-    def step(self, pad, rover, now):
+    def step(self, pad, rover, now, vision=None):
+        self.now = now
+        presses = self.toggle.update(pad)
         gap = now - self.previous_at if self.previous_at is not None else 0
         dt = min(0.1, max(0, gap))
         self.previous_at = now
-        session = (rover.get('generation'), pad.get('input_generation'))
+        session = (rover.get('generation'), pad.get('input_generation'),
+                   (pad.get('input') or {}).get('dropped', 0))
         if session != self.session:
             self.stop('center sticks after connection')
             self.session = session
@@ -77,20 +87,52 @@ class DriveControl:
                 self.neutral_since = None
             self.reason = 'ready' if self.armed else 'center sticks to enable drive'
             return self.snapshot()
+        if presses and (self.follower.active or presses > 1):
+            self.follower.cancel('X: following off', disabled=True)
+            self.left = self.right = self.throttle = self.turn = 0.0
+            self.reason = 'ready'
+            return self.snapshot()
+        if not neutral and self.follower.active:
+            self.follower.cancel('manual takeover; X to re-enable')
+            self.left = self.right = 0.0
+        elif presses:
+            if neutral:
+                self.follower.activate(vision, now)
+        if self.follower.active:
+            throttle, turn = self.follower.step(vision, now)
+            if self.follower.active:
+                self.throttle, self.turn = throttle, turn
+                target_left, target_right = mix(throttle, turn, min(self.max_power, self.follower.config.max_power))
+                self.reason = self.follower.state
+                self._output(target_left, target_right, dt)
+                return self.snapshot()
+            # A vision fault revokes its authority immediately, bypassing ramps.
+            self.left = self.right = self.throttle = self.turn = 0.0
+            self.reason = 'following stopped'
+            return self.snapshot()
         if neutral:
             self.left = self.right = 0.0  # Stop bypasses all smoothing.
             self.reason = 'ready'
         else:
             # Limit changes to 200 percentage points of full power per second.
             # Both sides use the same interpolation factor, preserving the turn ratio.
-            delta = max(abs(target_left - self.left), abs(target_right - self.right))
-            fraction = min(1, 2 * dt / delta) if delta else 1
-            self.left += (target_left - self.left) * fraction
-            self.right += (target_right - self.right) * fraction
+            self._output(target_left, target_right, dt)
             self.reason = 'driving'
         return self.snapshot()
 
+    def _output(self, left, right, dt):
+        if left == right == 0:
+            self.left = self.right = 0.0
+            return
+        delta = max(abs(left - self.left), abs(right - self.right))
+        fraction = min(1, 2 * dt / delta) if delta else 1
+        self.left += (left - self.left) * fraction
+        self.right += (right - self.right) * fraction
+
     def snapshot(self):
         return dict(enabled=True, armed=self.armed, state=self.reason, max_power=self.max_power,
+                    power_limit=min(self.max_power, self.follower.config.max_power) if self.follower.active else self.max_power,
                     throttle=self.throttle, turn=self.turn,
-                    left_power=round(self.left, 6), right_power=round(self.right, 6))
+                    left_power=round(self.left, 6), right_power=round(self.right, 6),
+                    authority='following' if self.follower.active else 'manual',
+                    following=self.follower.snapshot(self.now))

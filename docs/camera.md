@@ -23,7 +23,8 @@ capture configuration is not used for this camera.
 ```
 
 Press **D** in the interactive terminal to toggle detection without restarting
-video or the application. No controller buttons were reassigned. In headless or
+video or the application. Controller **X** toggles person following; see
+[following operation and architecture](following.md). In headless or
 JSON mode, `kill -USR1 APP_PID` toggles detection; target the main application PID.
 `CameraMonitor.set_detection(bool)` provides the same operation for future code.
 Disabling detection clears its observations immediately and stops the NCNN
@@ -70,7 +71,8 @@ Camera exposure/focus controls are left unchanged.
 - **Camera process:** GStreamer capture, scaling, Cairo boxes, CPU H.264 encoding,
   shared RTSP server and asynchronous detector lifecycle. Created by a fresh
   interpreter with only its IPC socket inherited, never the UART/input handles.
-- **Detection process:** spawned Python interpreter with NCNN inference. Only a
+- **Detection process:** spawned Python interpreter with NCNN inference, bounded
+  person association and source-time Kalman filtering. Only a
   small RGB image is copied through a shared-memory slot. A nonblocking lock
   protects this slot; a busy/dead reader causes frame drops, not a video wait.
 
@@ -103,6 +105,8 @@ Restart generations prevent old results from becoming valid in a new pipeline.
 | `observation` | Last raw result for diagnostics; consumers must check `observation_valid` |
 | `observation.captured_at`, `completed_at` | Host monotonic seconds, comparable within this boot |
 | `observation.frame_sequence` | Sequence of submitted inference frames; skipped values are normal |
+| `observation.tracks` | At most 32 ID/box/measurement/velocity records, with measured/confirmed/ambiguous flags and last real `seen_at`; predicted-only tracks do not authorize motion |
+| `observation.tracking_ms` | Worker-side association/filter time, separate from `inference_ms` |
 | `process_generation`, `camera_generation`, `detection_generation` in the observation | Identities spanning process/capture/detector restarts |
 | `capture_fps`, `video_fps`, `detection_fps` | Measured one-second rates |
 | `last_error`, `detection_error`, `previous_error` | Current camera/detector error and previous process failure |
@@ -120,11 +124,11 @@ viewer to reconnect. The parent detects lost camera heartbeats after three
 seconds (15-second initial interpreter grace). Linux parent-death signals and
 process-group cleanup prevent orphaned camera/detection workers on exit.
 
-Future autonomy should consume valid observations and propose motion to an
-arbiter in the control layer. Only the existing UART owner may write motors.
-Person tracking/selection, distance estimation and autonomous driving are not
-implemented. Manual takeover must cancel autonomy; stale input/vision must stop
-autonomous commands, and reconnect must not silently resume following.
+Person following consumes these observations through the existing UART control
+arbiter. It requires measurements at most 250 ms old, independently of the
+500 ms overlay expiry. Manual takeover, stale/lost/ambiguous targets and source
+restarts cancel it; recovery never silently resumes following. Only the existing
+UART owner writes motors. See [following details](following.md).
 
 ## Dependencies and model
 

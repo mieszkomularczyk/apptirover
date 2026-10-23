@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apptirover.camera import CameraConfig, CameraMonitor
 from apptirover.serial_monitor import SerialMonitor
+from apptirover.following import FollowConfig
 
 
 def wait_for(predicate, message, timeout=12):
@@ -36,8 +37,11 @@ def wait_for(predicate, message, timeout=12):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', help='Optional known person image instead of test pattern')
+    parser.add_argument('--follow-check', action='store_true', help='Exercise X following with an image containing one centered person; simulated motors only')
     parser.add_argument('--port', type=int, default=18554)
     args = parser.parse_args()
+    if args.follow_check and not args.image:
+        parser.error('--follow-check requires --image with one centered person')
     camera = CameraMonitor(CameraConfig(test_pattern=not bool(args.image), image=args.image,
                                        host='127.0.0.1', port=args.port, no_detection=True))
     master, slave = pty.openpty()
@@ -45,7 +49,8 @@ def main():
     commands = []
     gaps = []
     pad = dict(connected=True, input_ready=True, input_generation=1, worker_age_s=0, link_age_s=0,
-               input=dict(sticks=dict(left_y=0, right_x=0), resyncing=False))
+               input=dict(sticks=dict(left_y=0, right_x=0), resyncing=False,
+                          buttons=[], button_presses={'BTN_NORTH': 0}, dropped=0))
 
     def rover():
         pending = b''
@@ -61,16 +66,17 @@ def main():
                     reply = dict(T=1001, v=12.3, L=0, R=0) if command['T'] == 130 else dict(T=1002, ax=0)
                     os.write(master, json.dumps(reply).encode() + b'\n')
 
-    serial = SerialMonitor(os.ttyname(slave), poll_interval=.1, controller_source=lambda: pad)
+    serial = SerialMonitor(os.ttyname(slave), poll_interval=.1, controller_source=lambda: pad,
+                           vision_source=camera.snapshot, follow_config=FollowConfig(desired_width=.08))
     original_step = serial.drive.step
     previous = None
 
-    def measured_step(pad, state, now):
+    def measured_step(pad, state, now, vision=None):
         nonlocal previous
         if previous is not None:
             gaps.append(now - previous)
         previous = now
-        return original_step(pad, state, now)
+        return original_step(pad, state, now, vision)
 
     serial.drive.step = measured_step
     fake = threading.Thread(target=rover)
@@ -100,15 +106,36 @@ def main():
                 assert camera.snapshot()['people'] > 0, camera.snapshot()
             time.sleep(3)
             print('Detection:', json.dumps(camera.snapshot()), flush=True)
+            if args.follow_check:
+                pad['input']['sticks']['left_y'] = 0
+                wait_for(lambda: serial.snapshot()['drive']['left_power'] == 0, 'Neutral did not stop')
+                pad['input']['button_presses']['BTN_NORTH'] = 1
+                wait_for(lambda: serial.snapshot()['drive']['following']['state'] == 'following',
+                         'X did not acquire a person', 5)
+                wait_for(lambda: serial.snapshot()['drive']['left_power'] < 0 and serial.snapshot()['drive']['right_power'] < 0,
+                         'Following did not reverse for a close person')
+                print('Following:', json.dumps(serial.snapshot()['drive']), flush=True)
+                pad['input']['sticks']['right_x'] = .5
+                wait_for(lambda: not serial.snapshot()['drive']['following']['active'], 'Manual input did not cancel following')
+                pad['input']['sticks']['right_x'] = 0
+                wait_for(lambda: serial.snapshot()['drive']['left_power'] == 0, 'Takeover neutral did not stop')
+                assert not serial.snapshot()['drive']['following']['active']
+                pad['input']['button_presses']['BTN_NORTH'] = 2
+                wait_for(lambda: serial.snapshot()['drive']['following']['state'] == 'following', 'Explicit X did not re-enable', 5)
             first_pid = camera.snapshot()['detector_pid']
             before = decoded()
             camera.set_detection(False)
             assert not camera.snapshot()['observation_valid']
+            if args.follow_check:
+                wait_for(lambda: not serial.snapshot()['drive']['following']['active'], 'Detection disable did not cancel following')
+                assert serial.snapshot()['drive']['left_power'] == 0
+                pad['input']['sticks']['left_y'] = -.5
             wait_for(lambda: camera.snapshot()['detector_pid'] is None, 'Detector did not stop')
             wait_for(lambda: decoded() > before + 30, 'Video interrupted by detection disable')
             camera.set_detection(True)
             wait_for(lambda: camera.snapshot()['observation_valid'], 'Detection did not resume', 50)
             assert camera.snapshot()['detector_pid'] != first_pid
+            assert not serial.snapshot()['drive']['following']['active'], 'Recovery silently resumed following'
 
             before = decoded()
             os.kill(camera.snapshot()['detector_pid'], signal.SIGKILL)

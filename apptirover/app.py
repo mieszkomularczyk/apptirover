@@ -16,6 +16,7 @@ from .controller import ControllerMonitor, MAC
 from .telemetry import Telemetry
 from .camera import CameraMonitor, add_arguments, config_from_arguments
 from .terminal import TerminalKeys
+from .following import FollowConfig
 
 
 def arguments(argv=None):
@@ -26,6 +27,12 @@ def arguments(argv=None):
     parser.add_argument('--refresh', type=float, default=5.0, help='Screen refreshes per second')
     parser.add_argument('--no-drive', action='store_true', help='Read telemetry and controller; send no motor/configuration commands')
     parser.add_argument('--max-power', type=float, default=0.5, help='Maximum motor power fraction (0.05–1; default 0.5)')
+    following = parser.add_argument_group('person following (controller X toggles)')
+    following.add_argument('--follow-width', type=float, default=.15, help='Desired person width as a fraction of the image (default 0.15)')
+    following.add_argument('--follow-power', type=float, default=.25, help='Following motor power cap, also bounded by --max-power (default 0.25)')
+    following.add_argument('--follow-button', default='BTN_NORTH',
+                           choices=('BTN_NORTH', 'BTN_WEST', 'BTN_A', 'BTN_B', 'BTN_TL', 'BTN_TR', 'BTN_START', 'BTN_SELECT'),
+                           help='Linux toggle button; default BTN_NORTH (Lite 2 X); see controller keys row')
     parser.add_argument('--duration', type=float, default=0, help='Exit after this many seconds; 0 runs until Ctrl+C')
     controllers = parser.add_mutually_exclusive_group()
     controllers.add_argument('--no-controller', action='store_true', help='Do not access Bluetooth or drive')
@@ -45,13 +52,15 @@ def arguments(argv=None):
         parser.error('--camera-only cannot be combined with --no-camera')
     if not 9600 <= args.baud <= 921600:
         parser.error('--baud must be between 9600 and 921600')
-    for key, low, high in (('poll_interval', 0.1, 10), ('refresh', 0.2, 10), ('duration', 0, 86400), ('max_power', 0.05, 1)):
+    for key, low, high in (('poll_interval', 0.1, 10), ('refresh', 0.2, 10), ('duration', 0, 86400),
+                           ('max_power', 0.05, 1), ('follow_width', .03, .8), ('follow_power', .05, 1)):
         value = getattr(args, key)
         if not math.isfinite(value) or not low <= value <= high:
             parser.error(f'--{key.replace("_", "-")} must be between {low} and {high}')
     if not (args.no_drive or args.no_controller or args.controller_only or args.camera_only) and args.poll_interval > 0.5:
         parser.error('--poll-interval must be at most 0.5 seconds while driving')
     args.camera_config = config_from_arguments(args, parser)
+    args.follow_config = FollowConfig(button=args.follow_button, desired_width=args.follow_width, max_power=args.follow_power)
     return args
 
 
@@ -60,10 +69,11 @@ def main(argv=None):
     console = Console()
     controller = None if args.no_controller or args.camera_only else ControllerMonitor(args.controller_address)
     source = controller.snapshot if controller and not args.no_drive else None
-    monitor = None if args.controller_only or args.camera_only else SerialMonitor(
-        args.port, args.baud, args.poll_interval, controller_source=source, max_power=args.max_power)
-    stopping = threading.Event()
     camera = CameraMonitor(args.camera_config)
+    monitor = None if args.controller_only or args.camera_only else SerialMonitor(
+        args.port, args.baud, args.poll_interval, controller_source=source, max_power=args.max_power,
+        vision_source=camera.snapshot, follow_config=args.follow_config)
+    stopping = threading.Event()
     toggles = []
     previous_handlers = {}
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):

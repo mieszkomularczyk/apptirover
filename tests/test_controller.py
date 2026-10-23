@@ -41,6 +41,20 @@ class FakeInput:
 
 
 class InputTests(unittest.TestCase):
+    def test_press_counts_survive_short_taps_and_ignore_repeat_or_resync(self):
+        device = FakeInput()
+        state = InputState(device)
+        def send(kind, code, value):
+            state.accept(InputEvent(0, 0, kind, code, value), 123, device)
+        for value in (1, 2, 1, 0, 1, 0):
+            send(e.EV_KEY, e.BTN_NORTH, value)
+        self.assertEqual(state.snapshot()['button_presses']['BTN_NORTH'], 2)
+        self.assertEqual(state.snapshot()['buttons'], [])
+        send(e.EV_SYN, e.SYN_DROPPED, 0)
+        device.keys = [e.BTN_NORTH]
+        send(e.EV_SYN, e.SYN_REPORT, 0)
+        self.assertEqual(state.snapshot()['button_presses']['BTN_NORTH'], 2)
+
     def test_normalization_and_supported_axis_layouts(self):
         self.assertEqual(normalize(128, 0, 255), 0)
         self.assertEqual(normalize(0, 0, 255), -1)

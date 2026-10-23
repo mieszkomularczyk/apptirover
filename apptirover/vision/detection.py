@@ -149,11 +149,16 @@ def _worker(model, threads, confidence, iou, pixels, shape, lock,
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     channel.setblocking(False)
     try:
-        detector = Detector(model, threads, confidence, iou)
+        from ..tracking import PersonTracker
+        low_threshold = min(.1, confidence / 2)
+        detector = Detector(model, threads, low_threshold, iou)
+        tracker = PersonTracker(high_threshold=confidence, low_threshold=low_threshold,
+                                new_threshold=max(.5, confidence))
         detector.predict(np.zeros(shape, dtype=np.uint8))
         send(channel, dict(type='ready'))
         shared = np.frombuffer(pixels, dtype=np.uint8).reshape(shape)
         completed_count = 0
+        last_frame = None
         while True:
             if not select.select([channel], [], [], .2)[0]:
                 continue
@@ -171,14 +176,24 @@ def _worker(model, threads, confidence, iou, pixels, shape, lock,
                 frame_time, frame_id, camera_generation = timestamp.value, sequence.value, generation.value
             finally:
                 lock.release()
+            frame = (camera_generation, frame_id)
+            if frame == last_frame:
+                continue
+            if last_frame is None or last_frame[0] != camera_generation:
+                tracker.reset()
+            last_frame = frame
             started = time.monotonic()
-            boxes = detector.predict(rgb)[:64]
+            rows = sorted(detector.predict(rgb), key=lambda row: row[4], reverse=True)[:64]
+            inferred = time.monotonic()
+            tracks = tracker.update(rows, frame_time)
+            boxes = [row for row in rows if row[4] >= confidence]
             completed = time.monotonic()
             completed_count += 1
             send(channel, dict(type='result', captured_at=frame_time, completed_at=completed,
                                frame_sequence=frame_id, camera_generation=camera_generation,
-                               boxes=boxes, completed_count=completed_count,
-                               inference_ms=(completed - started) * 1000))
+                               boxes=boxes, tracks=tracks, completed_count=completed_count,
+                               inference_ms=(inferred - started) * 1000,
+                               tracking_ms=(completed - inferred) * 1000))
     except Exception:
         send(channel, dict(type='error', error=traceback.format_exc()[-2000:]))
     finally:

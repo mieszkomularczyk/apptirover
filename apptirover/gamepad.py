@@ -39,6 +39,7 @@ class InputState:
         self.mapping = stick_axes(device.capabilities(absinfo=False))
         self.axes = {}
         self.buttons = set()
+        self.button_presses = {}
         self.events = 0
         self.dropped = 0
         self.resyncing = False
@@ -79,6 +80,8 @@ class InputState:
             axis['observed_min'] = min(axis['observed_min'], event.value)
             axis['observed_max'] = max(axis['observed_max'], event.value)
         elif event.type == ecodes.EV_KEY:
+            if event.value == 1 and event.code not in self.buttons:
+                self.button_presses[event.code] = self.button_presses.get(event.code, 0) + 1
             if event.value:
                 self.buttons.add(event.code)
             else:
@@ -91,5 +94,6 @@ class InputState:
         return dict(sticks=sticks, axes={code_name(ecodes.EV_ABS, code): dict(axis)
                                       for code, axis in self.axes.items()},
                     buttons=sorted(code_name(ecodes.EV_KEY, code) for code in self.buttons),
+                    button_presses={code_name(ecodes.EV_KEY, code): count for code, count in self.button_presses.items()},
                     events=self.events, dropped=self.dropped, resyncing=self.resyncing,
                     last_event=self.last_event, last_event_at=self.last_event_at)

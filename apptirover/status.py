@@ -69,7 +69,7 @@ def render(snapshot, host, uptime, controller=None, width=80, camera=None, heigh
     hint = ("Left Y: throttle   Right X: turn   Center: stop   Ctrl+C: exit"
             if snapshot.get('drive', {}).get('enabled') else "Monitoring only   |   Ctrl+C: exit")
     if camera:
-        hint = ('Left Y: move  Right X: turn  Center: stop  D: detection  Ctrl+C: exit'
+        hint = ('Left Y: move  Right X: turn  X: follow  D: AI  Ctrl+C: exit'
                 if snapshot.get('drive', {}).get('enabled') else 'Monitoring only   |   D: detection   |   Ctrl+C: exit')
     table = Table(
         title=Text(f"apptirover  |  {uptime:8.1f}s", style="bold cyan"),
@@ -123,8 +123,17 @@ def render(snapshot, host, uptime, controller=None, width=80, camera=None, heigh
     section('DRIVE', 'Left', 'Right', 'Limit', 'motor power', color='green')
     row('Output', fixed(drive.get('left_power', 0) * 100, '%', True, 1),
         fixed(drive.get('right_power', 0) * 100, '%', True, 1),
-        fixed(drive.get('max_power', 0) * 100, '%', digits=0), drive['state'],
+        fixed(drive.get('power_limit', drive.get('max_power', 0)) * 100, '%', digits=0), drive['state'],
         'green' if drive.get('armed') else 'yellow')
+    following = drive.get('following') if camera else None
+    if following:
+        row('Following', following['state'],
+            f"#{following['target_id']}" if following.get('target_id') is not None else 'no target',
+            fixed(following.get('width') * 100 if following.get('width') is not None else None, '%', digits=1),
+            following['reason'], 'green' if following['state'] == 'following' else 'yellow')
+        row('Target / age', fixed(following.get('center_x')),
+            fixed(following.get('observation_age_s'), ' s'), fixed(following['desired_width'] * 100, '%', digits=1),
+            'center / age / desired width', 'dim')
     row('Board L / R', fixed(base.get('L'), signed=True), fixed(base.get('R'), signed=True), '',
         'reported; no encoders' if base_color == 'green' else base_age, base_color)
 
@@ -194,7 +203,7 @@ def render(snapshot, host, uptime, controller=None, width=80, camera=None, heigh
             command_lines = len(measure.render_lines(command, measure.options, pad=False))
             budget = max(5, height - command_lines - 5)
             optional = ['RX / TX / bad', 'Board L / R', 'D-pad / keys', 'Magnetometer',
-                        'Health', 'Vision age', 'Acceleration']
+                        'Health', 'Vision age', 'Acceleration', 'Target / age', 'Gyroscope', 'Attitude']
             for label in optional:
                 if len(rows) <= budget:
                     break

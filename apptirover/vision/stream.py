@@ -258,20 +258,27 @@ class CameraServer:
             return
         context.set_line_width(2)
         context.set_font_size(13)
-        for x1, y1, x2, y2, confidence, class_id in result['boxes']:
+        tracks = [track for track in result.get('tracks', []) if track['measured']]
+        labeled = [(track['box'], track['score'], track['id'], track['ambiguous']) for track in tracks]
+        matched = {tuple(track['measurement']) for track in tracks}
+        labeled.extend((row[:4], row[4], None, False) for row in result['boxes'] if tuple(row[:4]) not in matched)
+        for (x1, y1, x2, y2), confidence, track_id, ambiguous in labeled:
             x, y = x1 * self.args.width, y1 * self.args.height
             width, height = (x2 - x1) * self.args.width, (y2 - y1) * self.args.height
-            context.set_source_rgb(0.15, 1, 0.2)
+            color = (1., .65, .1) if ambiguous else (.15, 1., .2)
+            context.set_source_rgb(*color)
             context.rectangle(x, y, width, height)
             context.stroke()
-            label = f"person {confidence:.0%}"
+            label = f"person #{track_id} {confidence:.0%}" if track_id is not None else f"person {confidence:.0%}"
+            if ambiguous:
+                label += ' ?'
             text_width = context.text_extents(label)[2]
             text_x = max(0, min(x, self.args.width - text_width - 6))
             text_y = max(0, y - 19)
             context.set_source_rgba(0, 0, 0, 0.7)
             context.rectangle(text_x, text_y, text_width + 6, 19)
             context.fill()
-            context.set_source_rgb(0.15, 1, 0.2)
+            context.set_source_rgb(*color)
             context.move_to(text_x + 3, text_y + 14)
             context.show_text(label)
 
@@ -410,6 +417,7 @@ class CameraServer:
                 if message.get('op') == 'detection':
                     self.set_detection(message['enabled'], message['revision'])
         self.retiring = [worker for worker in self.retiring if not worker.poll_stop()]
+        new_observation = False
         if self.detection_enabled and not self.worker and not self.retiring and self.detection_state == 'loading':
             try:
                 self.worker = DetectionWorker(self.args)
@@ -424,6 +432,7 @@ class CameraServer:
                 if result is not None and result['camera_generation'] == self.generation:
                     result['detection_generation'] = self.detection_generation
                     self.observation = result
+                    new_observation = True
                     self.detection_count += result['completed_count'] - self.last_worker_count
                     self.last_worker_count = result['completed_count']
                     self.last_result = (result['captured_at'], result['boxes'], result['inference_ms'])
@@ -435,7 +444,8 @@ class CameraServer:
         now = time.monotonic()
         if now - self.last_stats_time >= 1:
             self.report()
-        if now - self.last_status >= .1:
+        # New motion observations do not wait for the ordinary status heartbeat.
+        if new_observation or now - self.last_status >= .1:
             self.publish()
             self.last_status = now
         return True
